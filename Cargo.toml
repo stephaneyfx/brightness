@@ -1,0 +1,18 @@
+[package]
+name = "brightness"
+version = "0.1.0"
+authors = ["Stephane Raux <stephaneyfx@gmail.com>"]
+edition = "2018"
+description = "Get and set brightness (Linux only)"
+license = "0BSD"
+homepage = "https://github.com/stephaneyfx/brightness"
+repository = "https://github.com/stephaneyfx/brightness.git"
+documentation = "https://docs.rs/brightness"
+keywords = ["brightness", "backlight"]
+
+[dependencies]
+async-trait = "0.1.50"
+either = "1.6.1"
+futures = "0.3.16"
+thiserror = "1.0.26"
+zbus = "1.9.1"
