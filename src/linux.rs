@@ -4,6 +4,7 @@ use crate::Error;
 use async_trait::async_trait;
 use either::{Left, Right};
 use futures::Stream;
+use std::result::Result::Err;
 use std::{fs, io, iter, path::PathBuf};
 
 const BACKLIGHT_DIR: &str = "/sys/class/backlight";
@@ -20,8 +21,8 @@ impl crate::Brightness for Brightness {
     }
 
     async fn get(&self) -> Result<u32, Error> {
-        let max = read_value(&self.device, Value::Max)?;
-        let actual = read_value(&self.device, Value::Actual)?;
+        let max = self.read_value(Value::Max)?;
+        let actual = self.read_value(Value::Actual)?;
         let percentage = if max == 0 {
             0
         } else {
@@ -32,33 +33,9 @@ impl crate::Brightness for Brightness {
 
     async fn set(&mut self, percentage: u32) -> Result<(), Error> {
         let percentage = percentage.min(100);
-        let max = read_value(&self.device, Value::Max)?;
-        let desired = (
-            "backlight",
-            &self.device,
-            (u64::from(percentage) * max / 100) as u32,
-        );
-        let mut bus = zbus::azync::Connection::new_system().await.map_err(|e| {
-            Error::SettingBrightnessFailed {
-                device: self.device.clone(),
-                source: e.into(),
-            }
-        })?;
-        let response = bus
-            .call_method(
-                Some("org.freedesktop.login1"),
-                "/org/freedesktop/login1/session/auto",
-                Some("org.freedesktop.login1.Session"),
-                "SetBrightness",
-                &desired,
-            )
-            .await;
-        response
-            .map(|_| ())
-            .map_err(|e| Error::SettingBrightnessFailed {
-                device: self.device.clone(),
-                source: e.into(),
-            })
+        let max = self.read_value(Value::Max)?;
+        let value = (u64::from(percentage) * max / 100) as u32;
+        self.set_brightness_impl(value).await
     }
 }
 
@@ -134,19 +111,61 @@ impl Value {
     }
 }
 
-fn read_value(device: &str, name: Value) -> Result<u64, SysError> {
-    let path = [BACKLIGHT_DIR, device, name.as_str()]
-        .iter()
-        .collect::<PathBuf>();
-    fs::read_to_string(&path)
-        .map_err(|source| SysError::ReadingBacklightDeviceFailed {
-            path: path.clone(),
-            source,
-        })?
-        .trim()
-        .parse::<u64>()
-        .map_err(|e| SysError::ParsingBacklightInfoFailed {
-            path,
-            reason: e.to_string(),
+impl Brightness {
+    #[cfg(not(feature = "zbus"))]
+    async fn set_brightness_impl(&mut self, value: u32) -> Result<(), Error> {
+        let path = [BACKLIGHT_DIR, &self.device, "brightness"]
+            .iter()
+            .collect::<PathBuf>();
+        fs::write(&path, value.to_string()).map_err(|source| {
+            Error::SettingBrightnessFailed {
+                device: self.device.clone(),
+                source: Box::new(source),
+            }
+            .into()
         })
+    }
+
+    #[cfg(feature = "zbus")]
+    async fn set_brightness_impl(&mut self, value: u32) -> Result<(), Error> {
+        let desired = ("backlight", &self.device, value);
+        let mut bus = zbus::azync::Connection::new_system().await.map_err(|e| {
+            Error::SettingBrightnessFailed {
+                device: self.device.clone(),
+                source: e.into(),
+            }
+        })?;
+        let response = bus
+            .call_method(
+                Some("org.freedesktop.login1"),
+                "/org/freedesktop/login1/session/auto",
+                Some("org.freedesktop.login1.Session"),
+                "SetBrightness",
+                &desired,
+            )
+            .await;
+        response
+            .map(|_| ())
+            .map_err(|e| Error::SettingBrightnessFailed {
+                device: self.device.clone(),
+                source: e.into(),
+            })
+    }
+
+    fn read_value(&self, name: Value) -> Result<u64, SysError> {
+        let path = [BACKLIGHT_DIR, &self.device, name.as_str()]
+            .iter()
+            .collect::<PathBuf>();
+        fs::read_to_string(&path)
+            .map_err(|source| SysError::ReadingBacklightDeviceFailed {
+                path: path.clone(),
+                source,
+            })?
+            .trim()
+            .parse::<u64>()
+            .map_err(|e| SysError::ParsingBacklightInfoFailed {
+                path,
+                reason: e.to_string(),
+            })
+    }
 }

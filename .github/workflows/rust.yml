@@ -1,0 +1,32 @@
+name: Rust Build
+
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE_NAME: brightness
+
+jobs:
+
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: Cargo Test
+        run: cargo test
+
+
+  check_style:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Cargo Format Check
+        run: cargo fmt -- --check
+
+      - name: Cargo Sort Check
+        run: cargo install cargo-sort && cargo-sort --check

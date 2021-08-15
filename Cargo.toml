@@ -15,4 +15,7 @@ async-trait = "0.1.50"
 either = "1.6.1"
 futures = "0.3.16"
 thiserror = "1.0.26"
-zbus = "1.9.1"
+zbus = { version = "1.9.1", optional = true }
+
+[features]
+default = ["zbus"]

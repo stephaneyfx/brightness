@@ -105,3 +105,16 @@ pub enum Error {
         source: Box<dyn StdError + Send + Sync>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::brightness_devices;
+    use futures::executor::block_on_stream;
+
+    #[test]
+    fn it_works() {
+        for i in block_on_stream(brightness_devices()) {
+            println!("{:?}", i);
+        }
+    }
+}
