@@ -33,11 +33,8 @@ impl crate::Brightness for Brightness {
     async fn set(&mut self, percentage: u32) -> Result<(), Error> {
         let percentage = percentage.min(100);
         let max = read_value(&self.device, Value::Max)?;
-        let desired = (
-            "backlight",
-            &self.device,
-            (u64::from(percentage) * max / 100) as u32,
-        );
+        let desired_value = (u64::from(percentage) * u64::from(max) / 100) as u32;
+        let desired = ("backlight", &self.device, desired_value);
         let mut bus = zbus::azync::Connection::new_system().await.map_err(|e| {
             Error::SettingBrightnessFailed {
                 device: self.device.clone(),
@@ -53,12 +50,20 @@ impl crate::Brightness for Brightness {
                 &desired,
             )
             .await;
-        response
-            .map(|_| ())
-            .map_err(|e| Error::SettingBrightnessFailed {
+        match response {
+            Ok(_) => Ok(()),
+            Err(zbus::Error::MethodError(..)) => {
+                // Setting brightness through dbus may not work on older systems that don't have
+                // the `SetBrightness` method. Fall back to writing to the brightness file (which
+                // requires permission).
+                set_value(&self.device, desired_value)?;
+                Ok(())
+            }
+            Err(e) => Err(Error::SettingBrightnessFailed {
                 device: self.device.clone(),
                 source: e.into(),
-            })
+            }),
+        }
     }
 }
 
@@ -90,29 +95,38 @@ pub enum SysError {
     #[error("Failed to read {} directory", BACKLIGHT_DIR)]
     ReadingBacklightDirFailed(#[source] io::Error),
     #[error("Failed to read backlight device info {}", .path.display())]
-    ReadingBacklightDeviceFailed { path: PathBuf, source: io::Error },
+    ReadingBacklightDeviceFailed {
+        device: String,
+        path: PathBuf,
+        source: io::Error,
+    },
     #[error("Failed to parse backlight info in {}: {reason}", .path.display())]
-    ParsingBacklightInfoFailed { path: PathBuf, reason: String },
+    ParsingBacklightInfoFailed {
+        device: String,
+        path: PathBuf,
+        reason: String,
+    },
+    #[error("Failed to write brightness to {}", .path.display())]
+    WritingBrightnessFailed {
+        device: String,
+        path: PathBuf,
+        source: io::Error,
+    },
 }
 
 impl From<SysError> for Error {
     fn from(e: SysError) -> Self {
         match &e {
             SysError::ReadingBacklightDirFailed(_) => Error::ListingDevicesFailed(e.into()),
-            SysError::ReadingBacklightDeviceFailed { path, .. } => Error::GettingDeviceInfoFailed {
-                device: path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default()
-                    .into(),
-                source: e.into(),
-            },
-            SysError::ParsingBacklightInfoFailed { path, .. } => Error::GettingDeviceInfoFailed {
-                device: path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default()
-                    .into(),
+            SysError::ReadingBacklightDeviceFailed { device, .. }
+            | SysError::ParsingBacklightInfoFailed { device, .. } => {
+                Error::GettingDeviceInfoFailed {
+                    device: device.clone(),
+                    source: e.into(),
+                }
+            }
+            SysError::WritingBrightnessFailed { device, .. } => Error::SettingBrightnessFailed {
+                device: device.clone(),
                 source: e.into(),
             },
         }
@@ -134,19 +148,33 @@ impl Value {
     }
 }
 
-fn read_value(device: &str, name: Value) -> Result<u64, SysError> {
+fn read_value(device: &str, name: Value) -> Result<u32, SysError> {
     let path = [BACKLIGHT_DIR, device, name.as_str()]
         .iter()
         .collect::<PathBuf>();
     fs::read_to_string(&path)
         .map_err(|source| SysError::ReadingBacklightDeviceFailed {
+            device: device.into(),
             path: path.clone(),
             source,
         })?
         .trim()
-        .parse::<u64>()
+        .parse::<u32>()
         .map_err(|e| SysError::ParsingBacklightInfoFailed {
+            device: device.into(),
             path,
             reason: e.to_string(),
         })
+}
+
+fn set_value(device: &str, value: u32) -> Result<(), SysError> {
+    let path = [BACKLIGHT_DIR, device, "brightness"]
+        .iter()
+        .collect::<PathBuf>();
+    fs::write(&path, value.to_string()).map_err(|source| SysError::WritingBrightnessFailed {
+        device: device.into(),
+        path: path.clone(),
+        source,
+    })?;
+    Ok(())
 }
