@@ -1,3 +1,8 @@
+[workspace]
+members = [
+    "brightness-windows",
+]
+
 [package]
 name = "brightness"
 version = "0.2.0"
@@ -15,4 +20,10 @@ async-trait = "0.1.50"
 either = "1.6.1"
 futures = "0.3.16"
 thiserror = "1.0.26"
+maplit = "1.0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 zbus = "1.9.1"
+
+[target.'cfg(windows)'.dependencies]
+brightness-windows = { version = "0.1.0", path = "./brightness-windows" }

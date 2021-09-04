@@ -4,6 +4,8 @@ use crate::Error;
 use async_trait::async_trait;
 use either::{Left, Right};
 use futures::Stream;
+use maplit::hashmap;
+use std::collections::HashMap;
 use std::{fs, io, iter, path::PathBuf};
 
 const BACKLIGHT_DIR: &str = "/sys/class/backlight";
@@ -17,6 +19,10 @@ pub struct Brightness {
 impl crate::Brightness for Brightness {
     async fn device_name(&self) -> Result<String, Error> {
         Ok(self.device.clone())
+    }
+
+    async fn device_info(&self) -> Result<HashMap<String, String>, Error> {
+        Ok(hashmap! {})
     }
 
     async fn get(&self) -> Result<u32, Error> {

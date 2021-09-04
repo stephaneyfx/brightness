@@ -37,7 +37,6 @@
 //!
 //! All contributions shall be licensed under the [0BSD license](https://spdx.org/licenses/0BSD.html).
 
-#![cfg(target_os = "linux")]
 #![deny(warnings)]
 #![deny(missing_docs)]
 
@@ -50,13 +49,21 @@ use thiserror::Error;
 #[path = "linux.rs"]
 mod platform;
 
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod platform;
+
 use platform::Brightness as Inner;
+use std::collections::HashMap;
 
 /// Interface to get and set brightness
 #[async_trait]
 pub trait Brightness {
     /// Returns the device name
     async fn device_name(&self) -> Result<String, Error>;
+
+    /// Returns platform specific device info
+    async fn device_info(&self) -> Result<HashMap<String, String>, Error>;
 
     /// Returns the current brightness as a percentage
     async fn get(&self) -> Result<u32, Error>;
@@ -73,6 +80,10 @@ pub struct BrightnessDevice(Inner);
 impl Brightness for BrightnessDevice {
     async fn device_name(&self) -> Result<String, Error> {
         self.0.device_name().await
+    }
+
+    async fn device_info(&self) -> Result<HashMap<String, String>, Error> {
+        self.0.device_info().await
     }
 
     async fn get(&self) -> Result<u32, Error> {
