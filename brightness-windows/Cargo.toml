@@ -1,10 +1,17 @@
 [package]
 name = "brightness-windows"
 version = "0.1.0"
+authors = ["Stephane Raux <stephaneyfx@gmail.com>", "Contributors"]
 edition = "2018"
+description = "Windows bindings to get and set display brightness"
+license = "0BSD"
+homepage = "https://github.com/stephaneyfx/brightness"
+repository = "https://github.com/stephaneyfx/brightness.git"
+documentation = "https://docs.rs/brightness-windows"
+keywords = ["brightness", "backlight"]
 
-[dependencies]
+[target.'cfg(windows)'.dependencies]
 windows = "0.18.0"
 
-[build-dependencies]
+[target.'cfg(windows)'.build-dependencies]
 windows = "0.18.0"

@@ -7,6 +7,8 @@
 
 This crate provides definitions to get and set display brightness.
 
+Linux and Windows are supported.
+
 # Example
 
 ```rust
@@ -24,7 +26,7 @@ async fn show_brightness() -> Result<(), brightness::Error> {
 ```
 
 # Linux
- 
+
 This crate interacts with devices found at `/sys/class/backlight`. This means that the
 [ddcci-backlight](https://gitlab.com/ddcci-driver-linux/ddcci-driver-linux#ddcci-backlight-monitor-backlight-driver)
 kernel driver is required to control external displays (via DDC/CI).

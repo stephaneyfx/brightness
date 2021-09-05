@@ -1,4 +1,12 @@
+// Copyright (C) 2021 The brightness authors. Distributed under the 0BSD license.
+
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    generate_windows_bindings();
+}
+
+#[cfg(windows)]
+fn generate_windows_bindings() {
     windows::build! {
         Windows::Win32::Devices::Display::{
             DestroyPhysicalMonitor, GetMonitorBrightness, GetNumberOfPhysicalMonitorsFromHMONITOR,
@@ -19,3 +27,6 @@ fn main() {
         Windows::Win32::UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME,
     };
 }
+
+#[cfg(not(windows))]
+fn generate_windows_bindings() {}

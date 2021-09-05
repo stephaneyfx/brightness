@@ -6,9 +6,9 @@ members = [
 [package]
 name = "brightness"
 version = "0.2.0"
-authors = ["Stephane Raux <stephaneyfx@gmail.com>"]
+authors = ["Stephane Raux <stephaneyfx@gmail.com>", "Contributors"]
 edition = "2018"
-description = "Get and set brightness (Linux only)"
+description = "Get and set display brightness"
 license = "0BSD"
 homepage = "https://github.com/stephaneyfx/brightness"
 repository = "https://github.com/stephaneyfx/brightness.git"
@@ -20,10 +20,10 @@ async-trait = "0.1.50"
 either = "1.6.1"
 futures = "0.3.16"
 thiserror = "1.0.26"
-maplit = "1.0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "1.9.1"
 
 [target.'cfg(windows)'.dependencies]
-brightness-windows = { version = "0.1.0", path = "./brightness-windows" }
+brightness-windows = { version = "0.1.0", path = "brightness-windows" }
+windows = "0.18.0"

@@ -1,13 +1,7 @@
+// Copyright (C) 2021 The brightness authors. Distributed under the 0BSD license.
+
 use crate::Error;
 use async_trait::async_trait;
-use futures::Stream;
-use maplit::hashmap;
-use std::collections::HashMap;
-use std::ffi::{c_void, OsString};
-use std::iter;
-use std::os::windows::ffi::OsStringExt;
-
-use brightness_windows::windows::{self, HRESULT};
 use brightness_windows::Windows::Win32::{
     Devices::Display::{
         DestroyPhysicalMonitor, GetMonitorBrightness, GetNumberOfPhysicalMonitorsFromHMONITOR,
@@ -25,10 +19,32 @@ use brightness_windows::Windows::Win32::{
         CreateFileW, FILE_ACCESS_FLAGS, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ,
         FILE_SHARE_WRITE, OPEN_EXISTING,
     },
-    System::Diagnostics::Debug::{ERROR_ACCESS_DENIED, ERROR_NOT_FOUND},
-    System::SystemServices::{DeviceIoControl, GENERIC_READ, GENERIC_WRITE},
+    System::{
+        Diagnostics::Debug::{ERROR_ACCESS_DENIED, ERROR_NOT_FOUND},
+        SystemServices::{DeviceIoControl, GENERIC_READ, GENERIC_WRITE},
+    },
     UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME,
 };
+use either::{Left, Right};
+use futures::Stream;
+use std::{
+    ffi::{c_void, OsString},
+    iter,
+    mem::size_of,
+    os::windows::ffi::OsStringExt,
+    ptr,
+};
+use windows::HRESULT;
+
+/// Windows-specific brightness functionality
+#[async_trait]
+pub trait BrightnessExt {
+    /// Returns device description
+    async fn device_description(&self) -> Result<String, Error>;
+
+    /// Returns the device registry key
+    async fn device_registry_key(&self) -> Result<String, Error>;
+}
 
 #[derive(Debug)]
 pub struct Brightness {
@@ -36,9 +52,7 @@ pub struct Brightness {
     file_handle: WrappedFileHandle,
     device_name: String,
     device_description: String,
-    device_id: String,
     device_key: String,
-    device_string: String,
 }
 
 #[derive(Debug)]
@@ -63,29 +77,22 @@ impl Drop for WrappedFileHandle {
     }
 }
 
+fn is_not_found(e: &windows::Error) -> bool {
+    e.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0)
+}
+
 #[async_trait]
 impl crate::Brightness for Brightness {
     async fn device_name(&self) -> Result<String, Error> {
         Ok(self.device_name.clone())
     }
 
-    async fn device_info(&self) -> Result<HashMap<String, String>, Error> {
-        Ok(hashmap! {
-            "device_description".to_string() => self.device_description.clone(),
-            "device_id".to_string() => self.device_id.clone(),
-            "device_key".to_string() => self.device_key.clone(),
-            "device_string".to_string() => self.device_string.clone(),
-        })
-    }
-
     async fn get(&self) -> Result<u32, Error> {
         let ioctl_query = ioctl_query_supported_brightness(self);
         match ioctl_query {
-            Ok(_) => ioctl_query_display_brightness(self).map_err(|e| e.into()),
-            Err(e) if e.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) => {
-                ddcci_get_monitor_brightness(self)
-                    .map(|b| b.get_current_percentage())
-                    .map_err(|e| e.into())
+            Ok(_) => Ok(ioctl_query_display_brightness(self)?),
+            Err(e) if is_not_found(&e) => {
+                Ok(ddcci_get_monitor_brightness(self)?.get_current_percentage())
             }
             Err(e) => Err(SysError::IoctlQuerySupportedBrightnessFailed {
                 device_name: self.device_name.clone(),
@@ -100,12 +107,12 @@ impl crate::Brightness for Brightness {
         match ioctl_query {
             Ok(levels) => {
                 let new_value = levels.get_nearest(percentage);
-                ioctl_set_display_brightness(self, new_value).map_err(|e| e.into())
+                Ok(ioctl_set_display_brightness(self, new_value)?)
             }
-            Err(e) if e.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) => {
-                let new_value = ddcci_get_monitor_brightness(self)
-                    .map(|b| b.percentage_to_current(percentage))?;
-                ddcci_set_monitor_brightness(self, new_value).map_err(|e| e.into())
+            Err(e) if is_not_found(&e) => {
+                let new_value =
+                    ddcci_get_monitor_brightness(self)?.percentage_to_current(percentage);
+                Ok(ddcci_set_monitor_brightness(self, new_value)?)
             }
             Err(e) => Err(SysError::IoctlQuerySupportedBrightnessFailed {
                 device_name: self.device_name.clone(),
@@ -125,31 +132,32 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
     ) -> BOOL {
         let monitors = &mut *(data.0 as *mut Vec<HMONITOR>);
         monitors.push(handle);
-        return true.into();
+        true.into()
     }
+
     let mut hmonitors = Vec::<HMONITOR>::new();
     let devices = unsafe {
         match EnumDisplayMonitors(
             HDC::NULL,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
             Some(enum_monitors),
-            LPARAM((&mut hmonitors as *mut _) as isize),
+            LPARAM(&mut hmonitors as *mut _ as isize),
         )
         .ok()
         {
-            Err(e) => either::Left(iter::once(Err(SysError::EnumDeviceMonitorsFailed(e)))),
+            Err(e) => Left(iter::once(Err(SysError::EnumDisplayMonitorsFailed(e)))),
             Ok(_) => {
-                either::Right(hmonitors.into_iter().flat_map(|hmonitor| {
-                    // Get the Name of the HMONITOR
+                Right(hmonitors.into_iter().flat_map(|hmonitor| {
+                    // Get the name of the HMONITOR
                     let mut info = MONITORINFOEXW::default();
                     info.__AnonymousBase_winuser_L13558_C43.cbSize =
-                        std::mem::size_of::<MONITORINFOEXW>() as u32;
-                    let info_ptr = &mut info as *mut _;
-                    if let Err(e) = GetMonitorInfoW(hmonitor, info_ptr as *mut MONITORINFO).ok() {
+                        size_of::<MONITORINFOEXW>() as u32;
+                    let info_ptr = &mut info as *mut _ as *mut MONITORINFO;
+                    if let Err(e) = GetMonitorInfoW(hmonitor, info_ptr).ok() {
                         return vec![Err(SysError::GetMonitorInfoFailed(e))];
-                    };
+                    }
 
-                    // Get the Physical Monitors in the HMONITOR
+                    // Get the physical monitors in the HMONITOR
                     let mut physical_number: u32 = 0;
                     if let Err(e) = BOOL(GetNumberOfPhysicalMonitorsFromHMONITOR(
                         hmonitor,
@@ -158,53 +166,53 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                     .ok()
                     {
                         return vec![Err(SysError::GetPhysicalMonitorsFailed(e))];
-                    };
-                    let mut physical_monitors = {
+                    }
+                    let mut raw_physical_monitors = {
                         let monitor = PHYSICAL_MONITOR {
                             hPhysicalMonitor: HANDLE::NULL,
                             szPhysicalMonitorDescription: [0; 128],
                         };
                         vec![monitor; physical_number as usize]
                     };
+                    // Allocate first so that pushing the wrapped handles always succeeds.
+                    let mut physical_monitors = Vec::with_capacity(raw_physical_monitors.len());
                     if let Err(e) = BOOL(GetPhysicalMonitorsFromHMONITOR(
                         &hmonitor,
-                        physical_monitors.len() as u32,
-                        physical_monitors.as_mut_ptr(),
+                        raw_physical_monitors.len() as u32,
+                        raw_physical_monitors.as_mut_ptr(),
                     ))
                     .ok()
                     {
                         return vec![Err(SysError::GetPhysicalMonitorsFailed(e))];
-                    };
-                    // Transform immediately into WrappedPhysicalMonitor so the handles don't leak
-                    let physical_monitors = physical_monitors
-                        .into_iter()
-                        .map(|pm| {
-                            (
-                                WrappedPhysicalMonitor(pm.hPhysicalMonitor),
-                                pm.szPhysicalMonitorDescription,
-                            )
-                        })
-                        .collect::<Vec<_>>();
-
-                    // Get the Display Devices in the HMONITOR
-                    let mut device_number = 0;
-                    let mut device = DISPLAY_DEVICEW::default();
-                    device.cb = std::mem::size_of::<DISPLAY_DEVICEW>() as u32;
-                    let mut display_devices = Vec::new();
-                    while EnumDisplayDevicesW(
-                        PWSTR(info.szDevice.as_mut_ptr()),
-                        device_number,
-                        &mut device,
-                        EDD_GET_DEVICE_INTERFACE_NAME,
-                    )
-                    .as_bool()
-                    {
-                        device_number += 1;
-                        display_devices.push(device.clone());
                     }
+                    // Transform immediately into WrappedPhysicalMonitor so the handles don't leak
+                    raw_physical_monitors.into_iter().for_each(|pm| {
+                        physical_monitors.push((
+                            WrappedPhysicalMonitor(pm.hPhysicalMonitor),
+                            pm.szPhysicalMonitorDescription,
+                        ))
+                    });
+
+                    // Get the display devices in the HMONITOR
+                    let display_devices = (0..)
+                        .map(|device_number| {
+                            let mut device = DISPLAY_DEVICEW::default();
+                            device.cb = size_of::<DISPLAY_DEVICEW>() as u32;
+                            EnumDisplayDevicesW(
+                                PWSTR(info.szDevice.as_mut_ptr()),
+                                device_number,
+                                &mut device,
+                                EDD_GET_DEVICE_INTERFACE_NAME,
+                            )
+                            .as_bool()
+                            .then(|| device)
+                        })
+                        .take_while(Option::is_some)
+                        .flatten()
+                        .collect::<Vec<_>>();
                     if display_devices.len() != physical_monitors.len() {
-                        // There doesn't seem to be anyway to directly associate a physical monitor handle
-                        // with the equivalent display device, other than by array indexing
+                        // There doesn't seem to be any way to directly associate a physical monitor
+                        // handle with the equivalent display device, other than by array indexing
                         // https://stackoverflow.com/questions/63095216/how-to-associate-physical-monitor-with-monitor-deviceid
                         return vec![Err(SysError::EnumerationMismatch)];
                     }
@@ -214,13 +222,13 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                         .zip(display_devices)
                         .filter_map(|((physical_monitor, description), mut display_device)| {
                             // Get a file handle for this physical monitor
-                            // Note this is a different type of handle
+                            // Note that this is a different type of handle
                             let device_name = wchar_to_string(&display_device.DeviceName);
                             let handle = CreateFileW(
                                 PWSTR(display_device.DeviceID.as_mut_ptr()),
                                 FILE_ACCESS_FLAGS(GENERIC_READ | GENERIC_WRITE),
                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                std::ptr::null_mut(),
+                                ptr::null_mut(),
                                 OPEN_EXISTING,
                                 FILE_FLAGS_AND_ATTRIBUTES(0),
                                 HANDLE::NULL,
@@ -235,7 +243,7 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                                 return Some(Err(
                                     SysError::OpeningMonitorDeviceInterfaceHandleFailed {
                                         device_name,
-                                        source: windows::Error::from(e),
+                                        source: e.into(),
                                     },
                                 ));
                             }
@@ -244,8 +252,6 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                                 file_handle: WrappedFileHandle(handle),
                                 device_name,
                                 device_description: wchar_to_string(&description),
-                                device_string: wchar_to_string(&display_device.DeviceString),
-                                device_id: wchar_to_string(&display_device.DeviceID),
                                 device_key: wchar_to_string(&display_device.DeviceKey),
                             }))
                         })
@@ -257,10 +263,10 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
     futures::stream::iter(devices)
 }
 
-#[derive(Debug, Error, Clone)]
+#[derive(Clone, Debug, Error)]
 pub enum SysError {
     #[error("Failed to enumerate device monitors")]
-    EnumDeviceMonitorsFailed(#[source] windows::Error),
+    EnumDisplayMonitorsFailed(#[source] windows::Error),
     #[error("Failed to get monitor info")]
     GetMonitorInfoFailed(#[source] windows::Error),
     #[error("Failed to get physical monitors from the HMONITOR")]
@@ -273,19 +279,16 @@ pub enum SysError {
     #[error("Failed to open monitor interface handle (CreateFileW)")]
     OpeningMonitorDeviceInterfaceHandleFailed {
         device_name: String,
-        #[source]
         source: windows::Error,
     },
     #[error("Failed to query supported brightness (IOCTL)")]
     IoctlQuerySupportedBrightnessFailed {
         device_name: String,
-        #[source]
         source: windows::Error,
     },
     #[error("Failed to query display brightness (IOCTL)")]
     IoctlQueryDisplayBrightnessFailed {
         device_name: String,
-        #[source]
         source: windows::Error,
     },
     #[error("Unexpected response when querying display brightness (IOCTL)")]
@@ -293,19 +296,16 @@ pub enum SysError {
     #[error("Failed to get monitor brightness (DDCCI)")]
     GettingMonitorBrightnessFailed {
         device_name: String,
-        #[source]
         source: windows::Error,
     },
     #[error("Failed to set monitor brightness (IOCTL)")]
     IoctlSetBrightnessFailed {
         device_name: String,
-        #[source]
         source: windows::Error,
     },
     #[error("Failed to set monitor brightness (DDCCI)")]
     SettingBrightnessFailed {
         device_name: String,
-        #[source]
         source: windows::Error,
     },
 }
@@ -315,7 +315,7 @@ impl From<SysError> for Error {
         match &e {
             SysError::EnumerationMismatch
             | SysError::GetPhysicalMonitorsFailed(..)
-            | SysError::EnumDeviceMonitorsFailed(..)
+            | SysError::EnumDisplayMonitorsFailed(..)
             | SysError::GetMonitorInfoFailed(..)
             | SysError::OpeningMonitorDeviceInterfaceHandleFailed { .. } => {
                 Error::ListingDevicesFailed(Box::new(e))
@@ -340,7 +340,7 @@ impl From<SysError> for Error {
     }
 }
 
-pub fn wchar_to_string(s: &[u16]) -> String {
+fn wchar_to_string(s: &[u16]) -> String {
     let end = s.iter().position(|&x| x == 0).unwrap_or(s.len());
     let truncated = &s[0..end];
     OsString::from_wide(truncated).to_string_lossy().into()
@@ -397,16 +397,16 @@ fn ddcci_set_monitor_brightness(device: &Brightness, value: u32) -> Result<(), S
     }
 }
 
+/// Each level is a value from 0 to 100
 #[derive(Debug)]
-// "Each level is a value from 0 to 100"
 struct IoctlSupportedBrightnessLevels(Vec<u8>);
 
 impl IoctlSupportedBrightnessLevels {
     fn get_nearest(&self, percentage: u32) -> u8 {
         self.0
             .iter()
-            .min_by_key(|&num| (*num as i64 - percentage as i64).abs())
-            .map(|x| *x)
+            .copied()
+            .min_by_key(|&num| (num as i64 - percentage as i64).abs())
             .unwrap_or(0)
     }
 }
@@ -420,12 +420,12 @@ fn ioctl_query_supported_brightness(
         DeviceIoControl(
             device.file_handle.0,
             IOCTL_VIDEO_QUERY_SUPPORTED_BRIGHTNESS,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
             0,
             out_buffer.as_mut_ptr() as *mut c_void,
             out_buffer.capacity() as u32,
             &mut bytes_returned,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         )
         .ok()
         .map(|_| {
@@ -442,30 +442,30 @@ fn ioctl_query_display_brightness(device: &Brightness) -> Result<u32, SysError> 
         DeviceIoControl(
             device.file_handle.0,
             IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
             0,
-            (&mut display_brightness as *mut DISPLAY_BRIGHTNESS) as *mut c_void,
-            std::mem::size_of::<DISPLAY_BRIGHTNESS>() as u32,
+            &mut display_brightness as *mut DISPLAY_BRIGHTNESS as *mut c_void,
+            size_of::<DISPLAY_BRIGHTNESS>() as u32,
             &mut bytes_returned,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         )
         .ok()
         .map_err(|e| SysError::IoctlQueryDisplayBrightnessFailed {
             device_name: device.device_name.clone(),
             source: e,
         })
-        .and_then(|_| {
-            if display_brightness.ucDisplayPolicy == DISPLAYPOLICY_AC as u8 {
+        .and_then(|_| match display_brightness.ucDisplayPolicy as u32 {
+            DISPLAYPOLICY_AC => {
                 // This is a value between 0 and 100.
                 Ok(display_brightness.ucACBrightness as u32)
-            } else if display_brightness.ucDisplayPolicy == DISPLAYPOLICY_DC as u8 {
+            }
+            DISPLAYPOLICY_DC => {
                 // This is a value between 0 and 100.
                 Ok(display_brightness.ucDCBrightness as u32)
-            } else {
-                Err(SysError::IoctlQueryDisplayBrightnessUnexpectedResponse {
-                    device_name: device.device_name.clone(),
-                })
             }
+            _ => Err(SysError::IoctlQueryDisplayBrightnessUnexpectedResponse {
+                device_name: device.device_name.clone(),
+            }),
         })
     }
 }
@@ -483,12 +483,12 @@ fn ioctl_set_display_brightness(device: &Brightness, value: u8) -> Result<(), Sy
         DeviceIoControl(
             device.file_handle.0,
             IOCTL_VIDEO_SET_DISPLAY_BRIGHTNESS,
-            (&mut display_brightness as *mut DISPLAY_BRIGHTNESS) as *mut c_void,
-            std::mem::size_of::<DISPLAY_BRIGHTNESS>() as u32,
-            std::ptr::null_mut(),
+            &mut display_brightness as *mut DISPLAY_BRIGHTNESS as *mut c_void,
+            size_of::<DISPLAY_BRIGHTNESS>() as u32,
+            ptr::null_mut(),
             0,
             &mut bytes_returned,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         )
         .ok()
         .map(|_| {
@@ -496,11 +496,32 @@ fn ioctl_set_display_brightness(device: &Brightness, value: u8) -> Result<(), Sy
             // called immediately after then it won't show the newly updated values
             // Doing a very tiny sleep seems to mitigate this
             std::thread::sleep(std::time::Duration::from_nanos(1));
-            ()
         })
         .map_err(|e| SysError::IoctlSetBrightnessFailed {
             device_name: device.device_name.clone(),
             source: e,
         })
+    }
+}
+
+#[async_trait]
+impl BrightnessExt for Brightness {
+    async fn device_description(&self) -> Result<String, Error> {
+        Ok(self.device_description.clone())
+    }
+
+    async fn device_registry_key(&self) -> Result<String, Error> {
+        Ok(self.device_key.clone())
+    }
+}
+
+#[async_trait]
+impl BrightnessExt for crate::BrightnessDevice {
+    async fn device_description(&self) -> Result<String, Error> {
+        self.0.device_description().await
+    }
+
+    async fn device_registry_key(&self) -> Result<String, Error> {
+        self.0.device_registry_key().await
     }
 }

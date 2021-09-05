@@ -5,17 +5,9 @@
 //! - [📖 Documentation](https://docs.rs/brightness)
 //! - [⚖ 0BSD license](https://spdx.org/licenses/0BSD.html)
 //!
-//! This crate provides definitions to get and set brightness on Linux.
+//! This crate provides definitions to get and set display brightness.
 //!
-//! This crate interacts with devices found at `/sys/class/backlight`. This means that the
-//! [ddcci-backlight](https://gitlab.com/ddcci-driver-linux/ddcci-driver-linux#ddcci-backlight-monitor-backlight-driver)
-//! kernel driver is required to control external displays (via DDC/CI).
-//!
-//! Setting brightness is attempted using D-Bus and logind, which requires
-//! [systemd 243 or newer](https://github.com/systemd/systemd/blob/877aa0bdcc2900712b02dac90856f181b93c4e40/NEWS#L262).
-//! If this fails because the method is not available, the desired brightness is written to
-//! `/sys/class/backlight/$DEVICE/brightness`, which requires permission (`udev` rules can help with
-//! that).
+//! Linux and Windows are supported.
 //!
 //! # Example
 //!
@@ -32,6 +24,18 @@
 //!     }).await
 //! }
 //! ```
+//!
+//! # Linux
+//!
+//! This crate interacts with devices found at `/sys/class/backlight`. This means that the
+//! [ddcci-backlight](https://gitlab.com/ddcci-driver-linux/ddcci-driver-linux#ddcci-backlight-monitor-backlight-driver)
+//! kernel driver is required to control external displays (via DDC/CI).
+//!
+//! Setting brightness is attempted using D-Bus and logind, which requires
+//! [systemd 243 or newer](https://github.com/systemd/systemd/blob/877aa0bdcc2900712b02dac90856f181b93c4e40/NEWS#L262).
+//! If this fails because the method is not available, the desired brightness is written to
+//! `/sys/class/backlight/$DEVICE/brightness`, which requires permission (`udev` rules can help with
+//! that).
 //!
 //! # Contribute
 //!
@@ -54,16 +58,15 @@ mod platform;
 mod platform;
 
 use platform::Brightness as Inner;
-use std::collections::HashMap;
+
+#[cfg(windows)]
+pub use platform::BrightnessExt;
 
 /// Interface to get and set brightness
 #[async_trait]
 pub trait Brightness {
     /// Returns the device name
     async fn device_name(&self) -> Result<String, Error>;
-
-    /// Returns platform specific device info
-    async fn device_info(&self) -> Result<HashMap<String, String>, Error>;
 
     /// Returns the current brightness as a percentage
     async fn get(&self) -> Result<u32, Error>;
@@ -80,10 +83,6 @@ pub struct BrightnessDevice(Inner);
 impl Brightness for BrightnessDevice {
     async fn device_name(&self) -> Result<String, Error> {
         self.0.device_name().await
-    }
-
-    async fn device_info(&self) -> Result<HashMap<String, String>, Error> {
-        self.0.device_info().await
     }
 
     async fn get(&self) -> Result<u32, Error> {
