@@ -25,11 +25,9 @@ use brightness_windows::Windows::Win32::{
     },
     UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME,
 };
-use either::{Left, Right};
-use futures::Stream;
+use futures::{future::ready, Stream, StreamExt};
 use std::{
     ffi::{c_void, OsString},
-    iter,
     mem::size_of,
     os::windows::ffi::OsStringExt,
     ptr,
@@ -136,7 +134,7 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
     }
 
     let mut hmonitors = Vec::<HMONITOR>::new();
-    let devices = unsafe {
+    unsafe {
         match EnumDisplayMonitors(
             HDC::NULL,
             ptr::null_mut(),
@@ -145,9 +143,10 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
         )
         .ok()
         {
-            Err(e) => Left(iter::once(Err(SysError::EnumDisplayMonitorsFailed(e)))),
+            Err(e) => futures::stream::once(ready(Err(SysError::EnumDisplayMonitorsFailed(e))))
+                .left_stream(),
             Ok(_) => {
-                Right(hmonitors.into_iter().flat_map(|hmonitor| {
+                futures::stream::iter(hmonitors.into_iter().flat_map(|hmonitor| {
                     // Get the name of the HMONITOR
                     let mut info = MONITORINFOEXW::default();
                     info.__AnonymousBase_winuser_L13558_C43.cbSize =
@@ -257,10 +256,10 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                         })
                         .collect()
                 }))
+                .right_stream()
             }
         }
-    };
-    futures::stream::iter(devices)
+    }
 }
 
 #[derive(Clone, Debug, Error)]

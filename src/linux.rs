@@ -2,9 +2,8 @@
 
 use crate::Error;
 use async_trait::async_trait;
-use either::{Left, Right};
-use futures::Stream;
-use std::{fs, io, iter, path::PathBuf};
+use futures::{future::ready, Stream, StreamExt};
+use std::{fs, io, path::PathBuf};
 
 const BACKLIGHT_DIR: &str = "/sys/class/backlight";
 
@@ -68,8 +67,8 @@ impl crate::Brightness for Brightness {
 }
 
 pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> {
-    let devices = match fs::read_dir(BACKLIGHT_DIR) {
-        Ok(devices) => Right(
+    match fs::read_dir(BACKLIGHT_DIR) {
+        Ok(devices) => futures::stream::iter(
             devices
                 .map(|device| {
                     let device = device.map_err(SysError::ReadingBacklightDirFailed)?;
@@ -84,10 +83,12 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                         .filter(|_| keep))
                 })
                 .filter_map(Result::transpose),
-        ),
-        Err(e) => Left(iter::once(Err(SysError::ReadingBacklightDirFailed(e)))),
-    };
-    futures::stream::iter(devices)
+        )
+        .right_stream(),
+        Err(e) => {
+            futures::stream::once(ready(Err(SysError::ReadingBacklightDirFailed(e)))).left_stream()
+        }
+    }
 }
 
 #[derive(Debug, Error)]

@@ -17,7 +17,6 @@ keywords = ["brightness", "backlight"]
 
 [dependencies]
 async-trait = "0.1.50"
-either = "1.6.1"
 futures = "0.3.16"
 thiserror = "1.0.26"
 
