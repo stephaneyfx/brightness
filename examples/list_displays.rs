@@ -1,4 +1,4 @@
-use brightness::Brightness;
+use brightness::{Brightness, BrightnessDevice};
 use futures::{executor::block_on, TryStreamExt};
 
 fn main() {
@@ -16,11 +16,25 @@ async fn run() {
     println!("Found {} displays", count);
 }
 
-async fn show_brightness<T>(dev: &T) -> Result<(), brightness::Error>
-where
-    T: Brightness,
-{
+async fn show_brightness(dev: &BrightnessDevice) -> Result<(), brightness::Error> {
     println!("Display {}", dev.device_name().await?);
     println!("\tBrightness = {}%", dev.get().await?);
+    show_platform_specific_info(dev).await?;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn show_platform_specific_info(dev: &BrightnessDevice) -> Result<(), brightness::Error> {
+    use brightness::BrightnessExt;
+    println!("\tDevice description = {}", dev.device_description().await?);
+    println!(
+        "\tDevice registry key = {}",
+        dev.device_registry_key().await?
+    );
+    Ok(())
+}
+
+#[cfg(not(windows))]
+async fn show_platform_specific_info(_: &BrightnessDevice) -> Result<(), brightness::Error> {
     Ok(())
 }
