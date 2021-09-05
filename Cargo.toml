@@ -5,7 +5,7 @@ members = [
 
 [package]
 name = "brightness"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Stephane Raux <stephaneyfx@gmail.com>", "Contributors"]
 edition = "2018"
 description = "Get and set display brightness"
