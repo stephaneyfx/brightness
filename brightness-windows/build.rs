@@ -17,7 +17,7 @@ fn generate_windows_bindings() {
         Windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, LPARAM, PWSTR, RECT},
         Windows::Win32::Graphics::Gdi::{
             EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW, HDC,
-            HMONITOR, MONITORINFO, MONITORINFOEXW,
+            HMONITOR, MONITORINFO, MONITORINFOEXW, DISPLAY_DEVICE_ACTIVE
         },
         Windows::Win32::Storage::FileSystem::{
             CreateFileW, FILE_ACCESS_FLAGS, FILE_FLAGS_AND_ATTRIBUTES,

@@ -12,8 +12,8 @@ use brightness_windows::Windows::Win32::{
     },
     Foundation::{CloseHandle, BOOL, HANDLE, LPARAM, PWSTR, RECT},
     Graphics::Gdi::{
-        EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW, HDC, HMONITOR,
-        MONITORINFO, MONITORINFOEXW,
+        EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW,
+        DISPLAY_DEVICE_ACTIVE, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_ACCESS_FLAGS, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ,
@@ -208,6 +208,11 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                         })
                         .take_while(Option::is_some)
                         .flatten()
+                        .filter(|device| {
+                            // Filter out inactive displays since they won't have a corresponding
+                            // physical monitor
+                            (device.StateFlags & DISPLAY_DEVICE_ACTIVE) == DISPLAY_DEVICE_ACTIVE
+                        })
                         .collect::<Vec<_>>();
                     if display_devices.len() != physical_monitors.len() {
                         // There doesn't seem to be any way to directly associate a physical monitor
