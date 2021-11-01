@@ -1,6 +1,6 @@
 [package]
 name = "brightness-windows"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Stephane Raux <stephaneyfx@gmail.com>", "Contributors"]
 edition = "2018"
 description = "Windows bindings to get and set display brightness"

@@ -5,7 +5,7 @@ members = [
 
 [package]
 name = "brightness"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Stephane Raux <stephaneyfx@gmail.com>", "Contributors"]
 edition = "2018"
 description = "Get and set display brightness"
@@ -24,5 +24,5 @@ thiserror = "1.0.26"
 zbus = "1.9.1"
 
 [target.'cfg(windows)'.dependencies]
-brightness-windows = { version = "0.1.0", path = "brightness-windows" }
+brightness-windows = { version = "0.1.1", path = "brightness-windows" }
 windows = "0.18.0"
