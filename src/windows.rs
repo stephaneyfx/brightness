@@ -170,8 +170,6 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                 .into_iter()
                 .zip(display_devices)
                 .filter_map(|(physical_monitor, mut display_device)| {
-                    // Get a file handle for this physical monitor
-                    // Note that this is a different type of handle
                     let handle = match get_file_handle_for_display_device(&mut display_device) {
                         None => return None,
                         Some(h) => match h {
