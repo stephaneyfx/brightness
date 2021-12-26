@@ -2,37 +2,44 @@
 
 use crate::Error;
 use async_trait::async_trait;
-use brightness_windows::Windows::Win32::{
-    Devices::Display::{
-        DestroyPhysicalMonitor, GetMonitorBrightness, GetNumberOfPhysicalMonitorsFromHMONITOR,
-        GetPhysicalMonitorsFromHMONITOR, SetMonitorBrightness, DISPLAYPOLICY_AC, DISPLAYPOLICY_DC,
-        DISPLAY_BRIGHTNESS, IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS,
-        IOCTL_VIDEO_QUERY_SUPPORTED_BRIGHTNESS, IOCTL_VIDEO_SET_DISPLAY_BRIGHTNESS,
-        PHYSICAL_MONITOR,
-    },
-    Foundation::{CloseHandle, BOOL, HANDLE, LPARAM, PWSTR, RECT},
-    Graphics::Gdi::{
-        EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW,
-        DISPLAY_DEVICE_ACTIVE, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
-    },
-    Storage::FileSystem::{
-        CreateFileW, FILE_ACCESS_FLAGS, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, OPEN_EXISTING,
-    },
-    System::{
-        Diagnostics::Debug::{ERROR_ACCESS_DENIED, ERROR_NOT_FOUND},
-        SystemServices::{DeviceIoControl, GENERIC_READ, GENERIC_WRITE},
-    },
-    UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME,
-};
 use futures::{future::ready, Stream, StreamExt};
+use std::collections::HashMap;
 use std::{
     ffi::{c_void, OsString},
+    fmt,
     mem::size_of,
     os::windows::ffi::OsStringExt,
     ptr,
 };
-use windows::HRESULT;
+use windows::core::Error as WinError;
+use windows::core::HRESULT;
+use windows::Win32::Devices::Display::{
+    DisplayConfigGetDeviceInfo, QueryDisplayConfig, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_MODE_INFO_TYPE_TARGET,
+    DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL, DISPLAYCONFIG_PATH_INFO,
+    DISPLAYCONFIG_TARGET_DEVICE_NAME, DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY,
+};
+use windows::Win32::Foundation::ERROR_SUCCESS;
+use windows::Win32::{
+    Devices::Display::{
+        DestroyPhysicalMonitor, GetDisplayConfigBufferSizes, GetMonitorBrightness,
+        GetNumberOfPhysicalMonitorsFromHMONITOR, GetPhysicalMonitorsFromHMONITOR,
+        SetMonitorBrightness, DISPLAYPOLICY_AC, DISPLAYPOLICY_DC, DISPLAY_BRIGHTNESS,
+        IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS, IOCTL_VIDEO_QUERY_SUPPORTED_BRIGHTNESS,
+        IOCTL_VIDEO_SET_DISPLAY_BRIGHTNESS, PHYSICAL_MONITOR,
+    },
+    Foundation::{CloseHandle, BOOL, ERROR_ACCESS_DENIED, HANDLE, LPARAM, PWSTR, RECT},
+    Graphics::Gdi::{
+        EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW,
+        DISPLAY_DEVICE_ACTIVE, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW, QDC_ONLY_ACTIVE_PATHS,
+    },
+    Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
+    System::{
+        SystemServices::{GENERIC_READ, GENERIC_WRITE},
+        IO::DeviceIoControl,
+    },
+    UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME,
+};
 
 /// Windows-specific brightness functionality
 #[async_trait]
@@ -42,6 +49,9 @@ pub trait BrightnessExt {
 
     /// Returns the device registry key
     async fn device_registry_key(&self) -> Result<String, Error>;
+
+    /// Returns the device path
+    async fn device_path(&self) -> Result<String, Error>;
 }
 
 #[derive(Debug)]
@@ -49,12 +59,27 @@ pub struct Brightness {
     physical_monitor: WrappedPhysicalMonitor,
     file_handle: WrappedFileHandle,
     device_name: String,
+    // Note: PHYSICAL_MONITOR.szPhysicalMonitorDescription == DISPLAY_DEVICEW.DeviceString
     device_description: String,
     device_key: String,
+    // Note: DISPLAYCONFIG_TARGET_DEVICE_NAME.monitorDevicePath == DISPLAY_DEVICEW.DeviceID (with EDD_GET_DEVICE_INTERFACE_NAME)
+    device_path: String,
+    output_technology: DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY,
 }
 
-#[derive(Debug)]
+impl Brightness {
+    fn is_internal(&self) -> bool {
+        self.output_technology == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL
+    }
+}
+
 struct WrappedPhysicalMonitor(HANDLE);
+
+impl fmt::Debug for WrappedPhysicalMonitor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(format!("{}", self.0 .0).as_str())
+    }
+}
 
 impl Drop for WrappedPhysicalMonitor {
     fn drop(&mut self) {
@@ -64,8 +89,13 @@ impl Drop for WrappedPhysicalMonitor {
     }
 }
 
-#[derive(Debug)]
 struct WrappedFileHandle(HANDLE);
+
+impl fmt::Debug for WrappedFileHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(format!("{}", self.0 .0).as_str())
+    }
+}
 
 impl Drop for WrappedFileHandle {
     fn drop(&mut self) {
@@ -75,8 +105,9 @@ impl Drop for WrappedFileHandle {
     }
 }
 
-fn is_not_found(e: &windows::Error) -> bool {
-    e.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0)
+#[inline]
+fn flag_set<T: std::ops::BitAnd<Output = T> + std::cmp::PartialEq + Copy>(t: T, flag: T) -> bool {
+    t & flag == flag
 }
 
 #[async_trait]
@@ -86,231 +117,295 @@ impl crate::Brightness for Brightness {
     }
 
     async fn get(&self) -> Result<u32, Error> {
-        let ioctl_query = ioctl_query_supported_brightness(self);
-        match ioctl_query {
-            Ok(_) => Ok(ioctl_query_display_brightness(self)?),
-            Err(e) if is_not_found(&e) => {
-                Ok(ddcci_get_monitor_brightness(self)?.get_current_percentage())
-            }
-            Err(e) => Err(SysError::IoctlQuerySupportedBrightnessFailed {
-                device_name: self.device_name.clone(),
-                source: e,
-            }
-            .into()),
-        }
+        Ok(if self.is_internal() {
+            ioctl_query_display_brightness(self)?
+        } else {
+            ddcci_get_monitor_brightness(self)?.get_current_percentage()
+        })
     }
 
     async fn set(&mut self, percentage: u32) -> Result<(), Error> {
-        let ioctl_query = ioctl_query_supported_brightness(self);
-        match ioctl_query {
-            Ok(levels) => {
-                let new_value = levels.get_nearest(percentage);
-                Ok(ioctl_set_display_brightness(self, new_value)?)
-            }
-            Err(e) if is_not_found(&e) => {
-                let new_value =
-                    ddcci_get_monitor_brightness(self)?.percentage_to_current(percentage);
-                Ok(ddcci_set_monitor_brightness(self, new_value)?)
-            }
-            Err(e) => Err(SysError::IoctlQuerySupportedBrightnessFailed {
-                device_name: self.device_name.clone(),
-                source: e,
-            }
-            .into()),
-        }
+        Ok(if self.is_internal() {
+            let supported = ioctl_query_supported_brightness(self)?;
+            let new_value = supported.get_nearest(percentage);
+            ioctl_set_display_brightness(self, new_value)?;
+        } else {
+            let current = ddcci_get_monitor_brightness(self)?;
+            let new_value = current.percentage_to_current(percentage);
+            ddcci_set_monitor_brightness(self, new_value)?;
+        })
     }
 }
 
 pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> {
+    unsafe {
+        let device_info_map = match get_device_info_map() {
+            Ok(info) => info,
+            Err(e) => return futures::stream::once(ready(Err(e))).left_stream(),
+        };
+        let hmonitors = match enum_display_monitors() {
+            Ok(monitors) => monitors,
+            Err(e) => return futures::stream::once(ready(Err(e))).left_stream(),
+        };
+        futures::stream::iter(hmonitors.into_iter().flat_map(move |hmonitor| {
+            // Get the name of the HMONITOR
+            let mut info = MONITORINFOEXW::default();
+            info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+            let info_ptr = &mut info as *mut _ as *mut MONITORINFO;
+            if let Err(e) = GetMonitorInfoW(hmonitor, info_ptr).ok() {
+                return vec![Err(SysError::GetMonitorInfoFailed(e))];
+            }
+            // Get the physical monitors in the HMONITOR
+            let physical_monitors = match get_physical_monitors_from_hmonitor(hmonitor) {
+                Ok(p) => p,
+                Err(e) => return vec![Err(e)],
+            };
+            // Get the display devices in the HMONITOR
+            let display_devices = get_display_devices_from_hmonitor_info(&mut info);
+            if display_devices.len() != physical_monitors.len() {
+                // There doesn't seem to be any way to directly associate a physical monitor
+                // handle with the equivalent display device, other than by array indexing
+                // https://stackoverflow.com/questions/63095216/how-to-associate-physical-monitor-with-monitor-deviceid
+                return vec![Err(SysError::EnumerationMismatch)];
+            }
+            physical_monitors
+                .into_iter()
+                .zip(display_devices)
+                .filter_map(|(physical_monitor, mut display_device)| {
+                    // Get a file handle for this physical monitor
+                    // Note that this is a different type of handle
+                    let handle = match get_file_handle_for_display_device(&mut display_device) {
+                        None => return None,
+                        Some(h) => match h {
+                            Ok(h) => h,
+                            Err(e) => return Some(Err(e)),
+                        },
+                    };
+                    let info = match device_info_map.get(&display_device.DeviceID) {
+                        None => return Some(Err(SysError::DeviceInfoMissing)),
+                        Some(d) => d,
+                    };
+                    Some(Ok(Brightness {
+                        physical_monitor,
+                        file_handle: WrappedFileHandle(handle),
+                        device_name: wchar_to_string(&display_device.DeviceName),
+                        device_description: wchar_to_string(&display_device.DeviceString),
+                        device_key: wchar_to_string(&display_device.DeviceKey),
+                        device_path: wchar_to_string(&display_device.DeviceID),
+                        output_technology: info.outputTechnology,
+                    }))
+                })
+                .collect()
+        }))
+        .right_stream()
+    }
+}
+
+/// A map of device path (ID) to an info structure. We need this to determine output technology
+unsafe fn get_device_info_map(
+) -> Result<HashMap<[u16; 128], DISPLAYCONFIG_TARGET_DEVICE_NAME>, SysError> {
+    let mut path_count = 0;
+    let mut mode_count = 0;
+    if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
+        != ERROR_SUCCESS as i32
+    {
+        return Err(SysError::GetDisplayConfigBufferSizesFailed(
+            WinError::from_win32(),
+        ));
+    }
+    let mut display_paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+    let mut display_modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+    if QueryDisplayConfig(
+        QDC_ONLY_ACTIVE_PATHS,
+        &mut path_count,
+        display_paths.as_mut_ptr(),
+        &mut mode_count,
+        display_modes.as_mut_ptr(),
+        std::ptr::null_mut(),
+    ) != ERROR_SUCCESS as i32
+    {
+        return Err(SysError::QueryDisplayConfigFailed(WinError::from_win32()));
+    }
+    display_modes
+        .into_iter()
+        .filter(|mode| mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_TARGET)
+        .flat_map(|mode| {
+            let mut device_name = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+            device_name.header.size = size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
+            device_name.header.adapterId = mode.adapterId;
+            device_name.header.id = mode.id;
+            device_name.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+            let result = DisplayConfigGetDeviceInfo(&mut device_name.header) as u32;
+            match result {
+                ERROR_SUCCESS => Some(Ok((device_name.monitorDevicePath.clone(), device_name))),
+                // This error occurs if the calling process does not have access to the current desktop or is running on a remote session.
+                ERROR_ACCESS_DENIED => None,
+                _ => Some(Err(SysError::DisplayConfigGetDeviceInfoFailed(
+                    WinError::from_win32(),
+                ))),
+            }
+        })
+        .collect()
+}
+
+unsafe fn enum_display_monitors() -> Result<Vec<HMONITOR>, SysError> {
     unsafe extern "system" fn enum_monitors(
         handle: HMONITOR,
         _: HDC,
         _: *mut RECT,
         data: LPARAM,
     ) -> BOOL {
-        let monitors = &mut *(data.0 as *mut Vec<HMONITOR>);
+        let monitors = &mut *(data as *mut Vec<HMONITOR>);
         monitors.push(handle);
         true.into()
     }
-
     let mut hmonitors = Vec::<HMONITOR>::new();
-    unsafe {
-        match EnumDisplayMonitors(
-            HDC::NULL,
-            ptr::null_mut(),
-            Some(enum_monitors),
-            LPARAM(&mut hmonitors as *mut _ as isize),
-        )
-        .ok()
-        {
-            Err(e) => futures::stream::once(ready(Err(SysError::EnumDisplayMonitorsFailed(e))))
-                .left_stream(),
-            Ok(_) => {
-                futures::stream::iter(hmonitors.into_iter().flat_map(|hmonitor| {
-                    // Get the name of the HMONITOR
-                    let mut info = MONITORINFOEXW::default();
-                    info.__AnonymousBase_winuser_L13558_C43.cbSize =
-                        size_of::<MONITORINFOEXW>() as u32;
-                    let info_ptr = &mut info as *mut _ as *mut MONITORINFO;
-                    if let Err(e) = GetMonitorInfoW(hmonitor, info_ptr).ok() {
-                        return vec![Err(SysError::GetMonitorInfoFailed(e))];
-                    }
+    EnumDisplayMonitors(
+        HDC::default(),
+        ptr::null_mut(),
+        Some(enum_monitors),
+        &mut hmonitors as *mut _ as LPARAM,
+    )
+    .ok()
+    .map_err(|e| SysError::EnumDisplayMonitorsFailed(e))?;
+    Ok(hmonitors)
+}
 
-                    // Get the physical monitors in the HMONITOR
-                    let mut physical_number: u32 = 0;
-                    if let Err(e) = BOOL(GetNumberOfPhysicalMonitorsFromHMONITOR(
-                        hmonitor,
-                        &mut physical_number,
-                    ))
-                    .ok()
-                    {
-                        return vec![Err(SysError::GetPhysicalMonitorsFailed(e))];
-                    }
-                    let mut raw_physical_monitors = {
-                        let monitor = PHYSICAL_MONITOR {
-                            hPhysicalMonitor: HANDLE::NULL,
-                            szPhysicalMonitorDescription: [0; 128],
-                        };
-                        vec![monitor; physical_number as usize]
-                    };
-                    // Allocate first so that pushing the wrapped handles always succeeds.
-                    let mut physical_monitors = Vec::with_capacity(raw_physical_monitors.len());
-                    if let Err(e) = BOOL(GetPhysicalMonitorsFromHMONITOR(
-                        &hmonitor,
-                        raw_physical_monitors.len() as u32,
-                        raw_physical_monitors.as_mut_ptr(),
-                    ))
-                    .ok()
-                    {
-                        return vec![Err(SysError::GetPhysicalMonitorsFailed(e))];
-                    }
-                    // Transform immediately into WrappedPhysicalMonitor so the handles don't leak
-                    raw_physical_monitors.into_iter().for_each(|pm| {
-                        physical_monitors.push((
-                            WrappedPhysicalMonitor(pm.hPhysicalMonitor),
-                            pm.szPhysicalMonitorDescription,
-                        ))
-                    });
+unsafe fn get_physical_monitors_from_hmonitor(
+    hmonitor: HMONITOR,
+) -> Result<Vec<WrappedPhysicalMonitor>, SysError> {
+    let mut physical_number: u32 = 0;
+    BOOL(GetNumberOfPhysicalMonitorsFromHMONITOR(
+        hmonitor,
+        &mut physical_number,
+    ))
+    .ok()
+    .map_err(|e| SysError::GetPhysicalMonitorsFailed(e))?;
+    let mut raw_physical_monitors = vec![PHYSICAL_MONITOR::default(); physical_number as usize];
+    // Allocate first so that pushing the wrapped handles always succeeds.
+    let mut physical_monitors = Vec::with_capacity(raw_physical_monitors.len());
+    BOOL(GetPhysicalMonitorsFromHMONITOR(
+        &hmonitor,
+        raw_physical_monitors.len() as u32,
+        raw_physical_monitors.as_mut_ptr(),
+    ))
+    .ok()
+    .map_err(|e| SysError::GetPhysicalMonitorsFailed(e))?;
+    // Transform immediately into WrappedPhysicalMonitor so the handles don't leak
+    raw_physical_monitors
+        .into_iter()
+        .for_each(|pm| physical_monitors.push(WrappedPhysicalMonitor(pm.hPhysicalMonitor)));
+    Ok(physical_monitors)
+}
 
-                    // Get the display devices in the HMONITOR
-                    let display_devices = (0..)
-                        .map(|device_number| {
-                            let mut device = DISPLAY_DEVICEW::default();
-                            device.cb = size_of::<DISPLAY_DEVICEW>() as u32;
-                            EnumDisplayDevicesW(
-                                PWSTR(info.szDevice.as_mut_ptr()),
-                                device_number,
-                                &mut device,
-                                EDD_GET_DEVICE_INTERFACE_NAME,
-                            )
-                            .as_bool()
-                            .then(|| device)
-                        })
-                        .take_while(Option::is_some)
-                        .flatten()
-                        .filter(|device| {
-                            // Filter out inactive displays since they won't have a corresponding
-                            // physical monitor
-                            (device.StateFlags & DISPLAY_DEVICE_ACTIVE) == DISPLAY_DEVICE_ACTIVE
-                        })
-                        .collect::<Vec<_>>();
-                    if display_devices.len() != physical_monitors.len() {
-                        // There doesn't seem to be any way to directly associate a physical monitor
-                        // handle with the equivalent display device, other than by array indexing
-                        // https://stackoverflow.com/questions/63095216/how-to-associate-physical-monitor-with-monitor-deviceid
-                        return vec![Err(SysError::EnumerationMismatch)];
-                    }
+unsafe fn get_display_devices_from_hmonitor_info(
+    info: &mut MONITORINFOEXW,
+) -> Vec<DISPLAY_DEVICEW> {
+    (0..)
+        .map(|device_number| {
+            let mut device = DISPLAY_DEVICEW::default();
+            device.cb = size_of::<DISPLAY_DEVICEW>() as u32;
+            EnumDisplayDevicesW(
+                PWSTR(info.szDevice.as_mut_ptr()),
+                device_number,
+                &mut device,
+                EDD_GET_DEVICE_INTERFACE_NAME,
+            )
+            .as_bool()
+            .then(|| device)
+        })
+        .take_while(Option::is_some)
+        .flatten()
+        .filter(|device| {
+            // Filter out inactive displays since they won't have a corresponding
+            // physical monitor
+            flag_set(device.StateFlags, DISPLAY_DEVICE_ACTIVE)
+        })
+        .collect()
+}
 
-                    physical_monitors
-                        .into_iter()
-                        .zip(display_devices)
-                        .filter_map(|((physical_monitor, description), mut display_device)| {
-                            // Get a file handle for this physical monitor
-                            // Note that this is a different type of handle
-                            let device_name = wchar_to_string(&display_device.DeviceName);
-                            let handle = CreateFileW(
-                                PWSTR(display_device.DeviceID.as_mut_ptr()),
-                                FILE_ACCESS_FLAGS(GENERIC_READ | GENERIC_WRITE),
-                                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                ptr::null_mut(),
-                                OPEN_EXISTING,
-                                FILE_FLAGS_AND_ATTRIBUTES(0),
-                                HANDLE::NULL,
-                            );
-                            if handle.is_invalid() {
-                                let e = HRESULT::from_thread();
-                                // This error occurs for virtual devices e.g. Remote Desktop
-                                // sessions - they are not real monitors
-                                if e == HRESULT::from_win32(ERROR_ACCESS_DENIED.0) {
-                                    return None;
-                                }
-                                return Some(Err(
-                                    SysError::OpeningMonitorDeviceInterfaceHandleFailed {
-                                        device_name,
-                                        source: e.into(),
-                                    },
-                                ));
-                            }
-                            Some(Ok(Brightness {
-                                physical_monitor,
-                                file_handle: WrappedFileHandle(handle),
-                                device_name,
-                                device_description: wchar_to_string(&description),
-                                device_key: wchar_to_string(&display_device.DeviceKey),
-                            }))
-                        })
-                        .collect()
-                }))
-                .right_stream()
-            }
+unsafe fn get_file_handle_for_display_device(
+    display_device: &mut DISPLAY_DEVICEW,
+) -> Option<Result<HANDLE, SysError>> {
+    let handle = CreateFileW(
+        PWSTR(display_device.DeviceID.as_mut_ptr()),
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        ptr::null_mut(),
+        OPEN_EXISTING,
+        0,
+        HANDLE::default(),
+    );
+    if handle.is_invalid() {
+        let e = WinError::from_win32();
+        // This error occurs for virtual devices e.g. Remote Desktop
+        // sessions - they are not real monitors
+        if e.code() == HRESULT::from_win32(ERROR_ACCESS_DENIED) {
+            return None;
         }
+        return Some(Err(SysError::OpeningMonitorDeviceInterfaceHandleFailed {
+            device_name: wchar_to_string(&display_device.DeviceName),
+            source: e.into(),
+        }));
     }
+    Some(Ok(handle))
 }
 
 #[derive(Clone, Debug, Error)]
 pub enum SysError {
     #[error("Failed to enumerate device monitors")]
-    EnumDisplayMonitorsFailed(#[source] windows::Error),
+    EnumDisplayMonitorsFailed(#[source] WinError),
+    #[error("Failed to get display config buffer sizes")]
+    GetDisplayConfigBufferSizesFailed(#[source] WinError),
+    #[error("Failed to query display config")]
+    QueryDisplayConfigFailed(#[source] WinError),
+    #[error("Failed to get display config device info")]
+    DisplayConfigGetDeviceInfoFailed(#[source] WinError),
     #[error("Failed to get monitor info")]
-    GetMonitorInfoFailed(#[source] windows::Error),
+    GetMonitorInfoFailed(#[source] WinError),
     #[error("Failed to get physical monitors from the HMONITOR")]
-    GetPhysicalMonitorsFailed(#[source] windows::Error),
+    GetPhysicalMonitorsFailed(#[source] WinError),
     #[error(
     "The length of GetPhysicalMonitorsFromHMONITOR() and EnumDisplayDevicesW() results did not \
-     match, this likely means that monitors were connected/disconnected in between listing devices"
+     match, this could be because monitors were connected/disconnected while loading devices"
     )]
     EnumerationMismatch,
+    #[error(
+    "Unable to find a matching device info for this display device, this could be because monitors \
+     were connected while loading devices"
+    )]
+    DeviceInfoMissing,
     #[error("Failed to open monitor interface handle (CreateFileW)")]
     OpeningMonitorDeviceInterfaceHandleFailed {
         device_name: String,
-        source: windows::Error,
+        source: WinError,
     },
     #[error("Failed to query supported brightness (IOCTL)")]
     IoctlQuerySupportedBrightnessFailed {
         device_name: String,
-        source: windows::Error,
+        source: WinError,
     },
     #[error("Failed to query display brightness (IOCTL)")]
     IoctlQueryDisplayBrightnessFailed {
         device_name: String,
-        source: windows::Error,
+        source: WinError,
     },
     #[error("Unexpected response when querying display brightness (IOCTL)")]
     IoctlQueryDisplayBrightnessUnexpectedResponse { device_name: String },
     #[error("Failed to get monitor brightness (DDCCI)")]
     GettingMonitorBrightnessFailed {
         device_name: String,
-        source: windows::Error,
+        source: WinError,
     },
     #[error("Failed to set monitor brightness (IOCTL)")]
     IoctlSetBrightnessFailed {
         device_name: String,
-        source: windows::Error,
+        source: WinError,
     },
     #[error("Failed to set monitor brightness (DDCCI)")]
     SettingBrightnessFailed {
         device_name: String,
-        source: windows::Error,
+        source: WinError,
     },
 }
 
@@ -318,6 +413,10 @@ impl From<SysError> for Error {
     fn from(e: SysError) -> Self {
         match &e {
             SysError::EnumerationMismatch
+            | SysError::DeviceInfoMissing
+            | SysError::GetDisplayConfigBufferSizesFailed(..)
+            | SysError::QueryDisplayConfigFailed(..)
+            | SysError::DisplayConfigGetDeviceInfoFailed(..)
             | SysError::GetPhysicalMonitorsFailed(..)
             | SysError::EnumDisplayMonitorsFailed(..)
             | SysError::GetMonitorInfoFailed(..)
@@ -417,7 +516,7 @@ impl IoctlSupportedBrightnessLevels {
 
 fn ioctl_query_supported_brightness(
     device: &Brightness,
-) -> Result<IoctlSupportedBrightnessLevels, windows::Error> {
+) -> Result<IoctlSupportedBrightnessLevels, SysError> {
     unsafe {
         let mut bytes_returned = 0;
         let mut out_buffer = Vec::<u8>::with_capacity(256);
@@ -435,6 +534,10 @@ fn ioctl_query_supported_brightness(
         .map(|_| {
             out_buffer.set_len(bytes_returned as usize);
             IoctlSupportedBrightnessLevels(out_buffer)
+        })
+        .map_err(|e| SysError::IoctlQuerySupportedBrightnessFailed {
+            device_name: device.device_name.clone(),
+            source: e,
         })
     }
 }
@@ -517,6 +620,10 @@ impl BrightnessExt for Brightness {
     async fn device_registry_key(&self) -> Result<String, Error> {
         Ok(self.device_key.clone())
     }
+
+    async fn device_path(&self) -> Result<String, Error> {
+        Ok(self.device_path.clone())
+    }
 }
 
 #[async_trait]
@@ -527,5 +634,9 @@ impl BrightnessExt for crate::BrightnessDevice {
 
     async fn device_registry_key(&self) -> Result<String, Error> {
         self.0.device_registry_key().await
+    }
+
+    async fn device_path(&self) -> Result<String, Error> {
+        self.0.device_path().await
     }
 }

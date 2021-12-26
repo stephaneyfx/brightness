@@ -1,11 +1,6 @@
-[workspace]
-members = [
-    "brightness-windows",
-]
-
 [package]
 name = "brightness"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["Stephane Raux <stephaneyfx@gmail.com>", "Contributors"]
 edition = "2018"
 description = "Get and set display brightness"
@@ -23,6 +18,16 @@ thiserror = "1.0.26"
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "1.9.1"
 
-[target.'cfg(windows)'.dependencies]
-brightness-windows = { version = "0.1.1", path = "brightness-windows" }
-windows = "0.18.0"
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.29.0"
+features = [
+    "std",
+    "Win32_Foundation",
+    "Win32_Devices_Display",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_IO",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_SystemServices",
+]
