@@ -59,10 +59,12 @@ pub struct Brightness {
     physical_monitor: WrappedPhysicalMonitor,
     file_handle: WrappedFileHandle,
     device_name: String,
-    // Note: PHYSICAL_MONITOR.szPhysicalMonitorDescription == DISPLAY_DEVICEW.DeviceString
+    /// Note: PHYSICAL_MONITOR.szPhysicalMonitorDescription == DISPLAY_DEVICEW.DeviceString
+    /// Description is **not** unique.
     device_description: String,
     device_key: String,
-    // Note: DISPLAYCONFIG_TARGET_DEVICE_NAME.monitorDevicePath == DISPLAY_DEVICEW.DeviceID (with EDD_GET_DEVICE_INTERFACE_NAME)
+    /// Note: DISPLAYCONFIG_TARGET_DEVICE_NAME.monitorDevicePath == DISPLAY_DEVICEW.DeviceID (with EDD_GET_DEVICE_INTERFACE_NAME)\
+    /// These are in the "DOS Device Path" format.
     device_path: String,
     output_technology: DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY,
 }
@@ -73,6 +75,7 @@ impl Brightness {
     }
 }
 
+/// A safe wrapper for a physical monitor handle that implements `Drop` to call `DestroyPhysicalMonitor`
 struct WrappedPhysicalMonitor(HANDLE);
 
 impl fmt::Debug for WrappedPhysicalMonitor {
@@ -89,6 +92,7 @@ impl Drop for WrappedPhysicalMonitor {
     }
 }
 
+/// A safe wrapper for a windows HANDLE that implements `Drop` to call `CloseHandle`
 struct WrappedFileHandle(HANDLE);
 
 impl fmt::Debug for WrappedFileHandle {
@@ -148,20 +152,14 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
             Err(e) => return futures::stream::once(ready(Err(e))).left_stream(),
         };
         futures::stream::iter(hmonitors.into_iter().flat_map(move |hmonitor| {
-            // Get the name of the HMONITOR
-            let mut info = MONITORINFOEXW::default();
-            info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
-            let info_ptr = &mut info as *mut _ as *mut MONITORINFO;
-            if let Err(e) = GetMonitorInfoW(hmonitor, info_ptr).ok() {
-                return vec![Err(SysError::GetMonitorInfoFailed(e))];
-            }
-            // Get the physical monitors in the HMONITOR
             let physical_monitors = match get_physical_monitors_from_hmonitor(hmonitor) {
                 Ok(p) => p,
                 Err(e) => return vec![Err(e)],
             };
-            // Get the display devices in the HMONITOR
-            let display_devices = get_display_devices_from_hmonitor_info(&mut info);
+            let display_devices = match get_display_devices_from_hmonitor(hmonitor) {
+                Ok(p) => p,
+                Err(e) => return vec![Err(e)],
+            };
             if display_devices.len() != physical_monitors.len() {
                 // There doesn't seem to be any way to directly associate a physical monitor
                 // handle with the equivalent display device, other than by array indexing
@@ -201,7 +199,9 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
     }
 }
 
-/// A map of device path (ID) to an info structure. We need this to determine output technology
+/// Returns a `HashMap` of Device Path to `DISPLAYCONFIG_TARGET_DEVICE_NAME`.\
+/// This can be used to find the `DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY` for a monitor.\
+/// The output technology is used to determine if a device is an internal or external.
 unsafe fn get_device_info_map(
 ) -> Result<HashMap<[u16; 128], DISPLAYCONFIG_TARGET_DEVICE_NAME>, SysError> {
     let mut path_count = 0;
@@ -248,6 +248,9 @@ unsafe fn get_device_info_map(
         .collect()
 }
 
+/// Calls `EnumDisplayMonitors` and returns a list of `HMONITOR` handles.\
+/// Note that a `HMONITOR` is a logical construct that may correspond to multiple physical monitors.\
+/// e.g. when in "Duplicate" mode two physical monitors will belong to the same `HMONITOR`
 unsafe fn enum_display_monitors() -> Result<Vec<HMONITOR>, SysError> {
     unsafe extern "system" fn enum_monitors(
         handle: HMONITOR,
@@ -271,6 +274,10 @@ unsafe fn enum_display_monitors() -> Result<Vec<HMONITOR>, SysError> {
     Ok(hmonitors)
 }
 
+/// Gets the list of `PHYSICAL_MONITOR` handles that belong to a `HMONITOR`.\
+/// These handles are required for use with the DDC/CI functions, however a valid handle will still
+/// be returned for non DDC/CI monitors and also Remote Desktop Session displays.\
+/// Also note that physically connected but disabled (inactive) monitors are not returned from this API.
 unsafe fn get_physical_monitors_from_hmonitor(
     hmonitor: HMONITOR,
 ) -> Result<Vec<WrappedPhysicalMonitor>, SysError> {
@@ -298,10 +305,20 @@ unsafe fn get_physical_monitors_from_hmonitor(
     Ok(physical_monitors)
 }
 
-unsafe fn get_display_devices_from_hmonitor_info(
-    info: &mut MONITORINFOEXW,
-) -> Vec<DISPLAY_DEVICEW> {
-    (0..)
+/// Gets the list of display devices that belong to a `HMONITOR`.\
+/// Due to the `EDD_GET_DEVICE_INTERFACE_NAME` flag, the `DISPLAY_DEVICEW` will contain the DOS
+/// device path for each monitor in the `DeviceID` field.\
+/// Note: Connected but inactive displays have been filtered out.
+unsafe fn get_display_devices_from_hmonitor(
+    hmonitor: HMONITOR,
+) -> Result<Vec<DISPLAY_DEVICEW>, SysError> {
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+    let info_ptr = &mut info as *mut _ as *mut MONITORINFO;
+    GetMonitorInfoW(hmonitor, info_ptr)
+        .ok()
+        .map_err(|e| SysError::GetMonitorInfoFailed(e))?;
+    Ok((0..)
         .map(|device_number| {
             let mut device = DISPLAY_DEVICEW::default();
             device.cb = size_of::<DISPLAY_DEVICEW>() as u32;
@@ -316,14 +333,15 @@ unsafe fn get_display_devices_from_hmonitor_info(
         })
         .take_while(Option::is_some)
         .flatten()
-        .filter(|device| {
-            // Filter out inactive displays since they won't have a corresponding
-            // physical monitor
-            flag_set(device.StateFlags, DISPLAY_DEVICE_ACTIVE)
-        })
-        .collect()
+        .filter(|device| flag_set(device.StateFlags, DISPLAY_DEVICE_ACTIVE))
+        .collect())
 }
 
+/// Opens and returns a file handle for a display device using its DOS device path.\
+/// These handles are required for the `DeviceIoControl` API for internal displays, a handle
+/// will still be returned for other types of displays, but it *may* be invalid.\
+/// A `None` value means that a handle could not be opened, but this was for an expected reason,
+/// indicating this display device should be skipped.
 unsafe fn get_file_handle_for_display_device(
     display_device: &mut DISPLAY_DEVICEW,
 ) -> Option<Result<HANDLE, SysError>> {
