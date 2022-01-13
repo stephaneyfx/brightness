@@ -80,7 +80,7 @@ struct WrappedPhysicalMonitor(HANDLE);
 
 impl fmt::Debug for WrappedPhysicalMonitor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.0)
+        write!(f, "{}", self.0 .0)
     }
 }
 
@@ -97,7 +97,7 @@ struct WrappedFileHandle(HANDLE);
 
 impl fmt::Debug for WrappedFileHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.0)
+        write!(f, "{}", self.0 .0)
     }
 }
 
@@ -170,7 +170,8 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                 .into_iter()
                 .zip(display_devices)
                 .filter_map(|(physical_monitor, mut display_device)| {
-                    let file_handle = match get_file_handle_for_display_device(&mut display_device) {
+                    let file_handle = match get_file_handle_for_display_device(&mut display_device)
+                    {
                         None => return None,
                         Some(h) => match h {
                             Ok(h) => h,
