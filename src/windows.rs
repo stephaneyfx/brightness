@@ -80,7 +80,7 @@ struct WrappedPhysicalMonitor(HANDLE);
 
 impl fmt::Debug for WrappedPhysicalMonitor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(format!("{}", self.0 .0).as_str())
+        write!(f, "{}", self.0.0)
     }
 }
 
@@ -97,7 +97,7 @@ struct WrappedFileHandle(HANDLE);
 
 impl fmt::Debug for WrappedFileHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(format!("{}", self.0 .0).as_str())
+        write!(f, "{}", self.0.0)
     }
 }
 
@@ -170,7 +170,7 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                 .into_iter()
                 .zip(display_devices)
                 .filter_map(|(physical_monitor, mut display_device)| {
-                    let handle = match get_file_handle_for_display_device(&mut display_device) {
+                    let file_handle = match get_file_handle_for_display_device(&mut display_device) {
                         None => return None,
                         Some(h) => match h {
                             Ok(h) => h,
@@ -183,7 +183,7 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                     };
                     Some(Ok(Brightness {
                         physical_monitor,
-                        file_handle: WrappedFileHandle(handle),
+                        file_handle,
                         device_name: wchar_to_string(&display_device.DeviceName),
                         device_description: wchar_to_string(&display_device.DeviceString),
                         device_key: wchar_to_string(&display_device.DeviceKey),
@@ -199,7 +199,7 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
 
 /// Returns a `HashMap` of Device Path to `DISPLAYCONFIG_TARGET_DEVICE_NAME`.\
 /// This can be used to find the `DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY` for a monitor.\
-/// The output technology is used to determine if a device is an internal or external.
+/// The output technology is used to determine if a device is internal or external.
 unsafe fn get_device_info_map(
 ) -> Result<HashMap<[u16; 128], DISPLAYCONFIG_TARGET_DEVICE_NAME>, SysError> {
     let mut path_count = 0;
@@ -317,7 +317,7 @@ unsafe fn get_display_devices_from_hmonitor(
         .ok()
         .map_err(|e| SysError::GetMonitorInfoFailed(e))?;
     Ok((0..)
-        .map(|device_number| {
+        .map_while(|device_number| {
             let mut device = DISPLAY_DEVICEW::default();
             device.cb = size_of::<DISPLAY_DEVICEW>() as u32;
             EnumDisplayDevicesW(
@@ -329,20 +329,18 @@ unsafe fn get_display_devices_from_hmonitor(
             .as_bool()
             .then(|| device)
         })
-        .take_while(Option::is_some)
-        .flatten()
         .filter(|device| flag_set(device.StateFlags, DISPLAY_DEVICE_ACTIVE))
         .collect())
 }
 
 /// Opens and returns a file handle for a display device using its DOS device path.\
-/// These handles are required for the `DeviceIoControl` API for internal displays, a handle
-/// will still be returned for other types of displays, but it *may* be invalid.\
+/// These handles are only used for the `DeviceIoControl` API (for internal displays); a
+/// handle can still be returned for external displays, but it should not be used.\
 /// A `None` value means that a handle could not be opened, but this was for an expected reason,
 /// indicating this display device should be skipped.
 unsafe fn get_file_handle_for_display_device(
     display_device: &mut DISPLAY_DEVICEW,
-) -> Option<Result<HANDLE, SysError>> {
+) -> Option<Result<WrappedFileHandle, SysError>> {
     let handle = CreateFileW(
         PWSTR(display_device.DeviceID.as_mut_ptr()),
         GENERIC_READ | GENERIC_WRITE,
@@ -364,7 +362,7 @@ unsafe fn get_file_handle_for_display_device(
             source: e.into(),
         }));
     }
-    Some(Ok(handle))
+    Some(Ok(WrappedFileHandle(handle)))
 }
 
 #[derive(Clone, Debug, Error)]
