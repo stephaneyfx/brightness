@@ -151,50 +151,53 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
             Ok(monitors) => monitors,
             Err(e) => return futures::stream::once(ready(Err(e))).left_stream(),
         };
-        futures::stream::iter(hmonitors.into_iter().flat_map(move |hmonitor| {
-            let physical_monitors = match get_physical_monitors_from_hmonitor(hmonitor) {
-                Ok(p) => p,
-                Err(e) => return vec![Err(e)],
-            };
-            let display_devices = match get_display_devices_from_hmonitor(hmonitor) {
-                Ok(p) => p,
-                Err(e) => return vec![Err(e)],
-            };
-            if display_devices.len() != physical_monitors.len() {
-                // There doesn't seem to be any way to directly associate a physical monitor
-                // handle with the equivalent display device, other than by array indexing
-                // https://stackoverflow.com/questions/63095216/how-to-associate-physical-monitor-with-monitor-deviceid
-                return vec![Err(SysError::EnumerationMismatch)];
-            }
-            physical_monitors
-                .into_iter()
-                .zip(display_devices)
-                .filter_map(|(physical_monitor, mut display_device)| {
-                    let file_handle = match get_file_handle_for_display_device(&mut display_device)
-                    {
-                        None => return None,
-                        Some(h) => match h {
-                            Ok(h) => h,
-                            Err(e) => return Some(Err(e)),
-                        },
-                    };
-                    let info = match device_info_map.get(&display_device.DeviceID) {
-                        None => return Some(Err(SysError::DeviceInfoMissing)),
-                        Some(d) => d,
-                    };
-                    Some(Ok(Brightness {
-                        physical_monitor,
-                        file_handle,
-                        device_name: wchar_to_string(&display_device.DeviceName),
-                        device_description: wchar_to_string(&display_device.DeviceString),
-                        device_key: wchar_to_string(&display_device.DeviceKey),
-                        device_path: wchar_to_string(&display_device.DeviceID),
-                        output_technology: info.outputTechnology,
-                    }))
-                })
-                .collect()
-        }))
-        .right_stream()
+        let devices = hmonitors
+            .into_iter()
+            .flat_map(move |hmonitor| {
+                let physical_monitors = match get_physical_monitors_from_hmonitor(hmonitor) {
+                    Ok(p) => p,
+                    Err(e) => return vec![Err(e)],
+                };
+                let display_devices = match get_display_devices_from_hmonitor(hmonitor) {
+                    Ok(p) => p,
+                    Err(e) => return vec![Err(e)],
+                };
+                if display_devices.len() != physical_monitors.len() {
+                    // There doesn't seem to be any way to directly associate a physical monitor
+                    // handle with the equivalent display device, other than by array indexing
+                    // https://stackoverflow.com/questions/63095216/how-to-associate-physical-monitor-with-monitor-deviceid
+                    return vec![Err(SysError::EnumerationMismatch)];
+                }
+                physical_monitors
+                    .into_iter()
+                    .zip(display_devices)
+                    .filter_map(|(physical_monitor, mut display_device)| {
+                        let file_handle =
+                            match get_file_handle_for_display_device(&mut display_device) {
+                                None => return None,
+                                Some(h) => match h {
+                                    Ok(h) => h,
+                                    Err(e) => return Some(Err(e)),
+                                },
+                            };
+                        let info = match device_info_map.get(&display_device.DeviceID) {
+                            None => return Some(Err(SysError::DeviceInfoMissing)),
+                            Some(d) => d,
+                        };
+                        Some(Ok(Brightness {
+                            physical_monitor,
+                            file_handle,
+                            device_name: wchar_to_string(&display_device.DeviceName),
+                            device_description: wchar_to_string(&display_device.DeviceString),
+                            device_key: wchar_to_string(&display_device.DeviceKey),
+                            device_path: wchar_to_string(&display_device.DeviceID),
+                            output_technology: info.outputTechnology,
+                        }))
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        futures::stream::iter(devices).right_stream()
     }
 }
 
