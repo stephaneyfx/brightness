@@ -2,7 +2,8 @@ use brightness::{Brightness, BrightnessDevice};
 use futures::{executor::block_on, TryStreamExt};
 use std::env;
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let percentage = env::args()
         .skip(1)
         .next()
@@ -13,6 +14,7 @@ fn main() {
 
 async fn run(percentage: u32) {
     brightness::brightness_devices()
+        .await
         .try_for_each(|mut dev| async move {
             show_brightness(&dev).await?;
             dev.set(percentage).await?;
