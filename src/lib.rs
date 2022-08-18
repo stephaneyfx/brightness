@@ -54,7 +54,7 @@ use thiserror::Error;
 mod platform;
 
 #[cfg(windows)]
-#[path = "windows.rs"]
+#[path = "blocking/windows.rs"]
 mod platform;
 
 use platform::Brightness as Inner;
