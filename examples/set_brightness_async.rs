@@ -13,6 +13,7 @@ fn main() {
 
 async fn run(percentage: u32) {
     brightness::brightness_devices()
+        .await
         .try_for_each(|mut dev| async move {
             show_brightness(&dev).await?;
             dev.set(percentage).await?;

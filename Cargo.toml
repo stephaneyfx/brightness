@@ -1,6 +1,6 @@
 [package]
 name = "brightness"
-version = "0.4.1"
+version = "0.5.0"
 authors = ["Stephane Raux <stephaneyfx@gmail.com>", "Contributors"]
 edition = "2018"
 description = "Get and set display brightness"
@@ -10,13 +10,20 @@ repository = "https://github.com/stephaneyfx/brightness.git"
 documentation = "https://docs.rs/brightness"
 keywords = ["brightness", "backlight"]
 
+[features]
+async = ["async-trait", "futures", "blocking-crate"]
+default = ["async"]
+
 [dependencies]
-async-trait = "0.1.50"
-futures = "0.3.16"
+async-trait = { version = "0.1.50", optional = true }
+blocking-crate = { package = "blocking", version = "1.2.0", optional = true }
+cfg-if = "1.0.0"
+futures = { version = "0.3.16", optional = true }
+itertools = "0.10.3"
 thiserror = "1.0.26"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = "1.9.1"
+zbus = "2"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.29.0"
@@ -31,3 +38,13 @@ features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_SystemServices",
 ]
+
+[[example]]
+name = "list_displays_async"
+path = "examples/list_displays_async.rs"
+required-features = ["async"]
+
+[[example]]
+name = "set_brightness_async"
+path = "examples/set_brightness_async.rs"
+required-features = ["async"]

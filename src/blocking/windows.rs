@@ -1,8 +1,10 @@
-// Copyright (C) 2021 The brightness authors. Distributed under the 0BSD license.
+// Copyright (C) 2022 Stephane Raux & Contributors. Distributed under the 0BSD license.
 
+//! Platform-specific implementation for Windows.
+
+use crate::blocking::BrightnessDevice;
 use crate::Error;
-use async_trait::async_trait;
-use futures::{future::ready, Stream, StreamExt};
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::{
     ffi::{c_void, OsString},
@@ -41,35 +43,34 @@ use windows::Win32::{
     UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME,
 };
 
-/// Windows-specific brightness functionality
-#[async_trait]
+/// Windows-specific brightness functionality.
 pub trait BrightnessExt {
     /// Returns device description
-    async fn device_description(&self) -> Result<String, Error>;
+    fn device_description(&self) -> &str;
 
     /// Returns the device registry key
-    async fn device_registry_key(&self) -> Result<String, Error>;
+    fn device_registry_key(&self) -> &str;
 
     /// Returns the device path
-    async fn device_path(&self) -> Result<String, Error>;
+    fn device_path(&self) -> &str;
 }
 
 #[derive(Debug)]
-pub struct Brightness {
+pub(crate) struct BlockingDeviceImpl {
     physical_monitor: WrappedPhysicalMonitor,
     file_handle: WrappedFileHandle,
     device_name: String,
     /// Note: PHYSICAL_MONITOR.szPhysicalMonitorDescription == DISPLAY_DEVICEW.DeviceString
     /// Description is **not** unique.
-    device_description: String,
-    device_key: String,
+    pub(crate) device_description: String,
+    pub(crate) device_key: String,
     /// Note: DISPLAYCONFIG_TARGET_DEVICE_NAME.monitorDevicePath == DISPLAY_DEVICEW.DeviceID (with EDD_GET_DEVICE_INTERFACE_NAME)\
     /// These are in the "DOS Device Path" format.
-    device_path: String,
+    pub(crate) device_path: String,
     output_technology: DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY,
 }
 
-impl Brightness {
+impl BlockingDeviceImpl {
     fn is_internal(&self) -> bool {
         self.output_technology == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL
     }
@@ -114,13 +115,12 @@ fn flag_set<T: std::ops::BitAnd<Output = T> + std::cmp::PartialEq + Copy>(t: T, 
     t & flag == flag
 }
 
-#[async_trait]
-impl crate::Brightness for Brightness {
-    async fn device_name(&self) -> Result<String, Error> {
+impl crate::blocking::Brightness for BlockingDeviceImpl {
+    fn device_name(&self) -> Result<String, Error> {
         Ok(self.device_name.clone())
     }
 
-    async fn get(&self) -> Result<u32, Error> {
+    fn get(&self) -> Result<u32, Error> {
         Ok(if self.is_internal() {
             ioctl_query_display_brightness(self)?
         } else {
@@ -128,8 +128,8 @@ impl crate::Brightness for Brightness {
         })
     }
 
-    async fn set(&mut self, percentage: u32) -> Result<(), Error> {
-        Ok(if self.is_internal() {
+    fn set(&self, percentage: u32) -> Result<(), Error> {
+        if self.is_internal() {
             let supported = ioctl_query_supported_brightness(self)?;
             let new_value = supported.get_nearest(percentage);
             ioctl_set_display_brightness(self, new_value)?;
@@ -137,41 +137,30 @@ impl crate::Brightness for Brightness {
             let current = ddcci_get_monitor_brightness(self)?;
             let new_value = current.percentage_to_current(percentage);
             ddcci_set_monitor_brightness(self, new_value)?;
-        })
+        }
+        Ok(())
     }
 }
 
-pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> {
+pub(crate) fn brightness_devices() -> Result<Vec<BlockingDeviceImpl>, SysError> {
     unsafe {
-        let device_info_map = match get_device_info_map() {
-            Ok(info) => info,
-            Err(e) => return futures::stream::once(ready(Err(e))).left_stream(),
-        };
-        let hmonitors = match enum_display_monitors() {
-            Ok(monitors) => monitors,
-            Err(e) => return futures::stream::once(ready(Err(e))).left_stream(),
-        };
-        let devices = hmonitors
+        let device_info_map = get_device_info_map()?;
+        let hmonitors = enum_display_monitors()?;
+        hmonitors
             .into_iter()
-            .flat_map(move |hmonitor| {
-                let physical_monitors = match get_physical_monitors_from_hmonitor(hmonitor) {
-                    Ok(p) => p,
-                    Err(e) => return vec![Err(e)],
-                };
-                let display_devices = match get_display_devices_from_hmonitor(hmonitor) {
-                    Ok(p) => p,
-                    Err(e) => return vec![Err(e)],
-                };
+            .map(move |hmonitor| -> Result<Vec<BlockingDeviceImpl>, SysError> {
+                let physical_monitors = get_physical_monitors_from_hmonitor(hmonitor)?;
+                let display_devices = get_display_devices_from_hmonitor(hmonitor)?;
                 if display_devices.len() != physical_monitors.len() {
                     // There doesn't seem to be any way to directly associate a physical monitor
                     // handle with the equivalent display device, other than by array indexing
                     // https://stackoverflow.com/questions/63095216/how-to-associate-physical-monitor-with-monitor-deviceid
-                    return vec![Err(SysError::EnumerationMismatch)];
+                    return Err(SysError::EnumerationMismatch);
                 }
                 physical_monitors
                     .into_iter()
                     .zip(display_devices)
-                    .filter_map(|(physical_monitor, mut display_device)| {
+                    .filter_map(|(physical_monitor, mut display_device)| -> Option<Result<BlockingDeviceImpl, SysError>>{
                         let file_handle =
                             match get_file_handle_for_display_device(&mut display_device) {
                                 None => return None,
@@ -184,7 +173,7 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                             None => return Some(Err(SysError::DeviceInfoMissing)),
                             Some(d) => d,
                         };
-                        Some(Ok(Brightness {
+                        Some(Ok(BlockingDeviceImpl {
                             physical_monitor,
                             file_handle,
                             device_name: wchar_to_string(&display_device.DeviceName),
@@ -194,10 +183,10 @@ pub fn brightness_devices() -> impl Stream<Item = Result<Brightness, SysError>> 
                             output_technology: info.outputTechnology,
                         }))
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()
             })
-            .collect::<Vec<_>>();
-        futures::stream::iter(devices).right_stream()
+            .flatten_ok()
+            .collect::<Result<Vec<_>, _>>()
     }
 }
 
@@ -239,7 +228,7 @@ unsafe fn get_device_info_map(
             device_name.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
             let result = DisplayConfigGetDeviceInfo(&mut device_name.header) as u32;
             match result {
-                ERROR_SUCCESS => Some(Ok((device_name.monitorDevicePath.clone(), device_name))),
+                ERROR_SUCCESS => Some(Ok((device_name.monitorDevicePath, device_name))),
                 // This error occurs if the calling process does not have access to the current desktop or is running on a remote session.
                 ERROR_ACCESS_DENIED => None,
                 _ => Some(Err(SysError::DisplayConfigGetDeviceInfoFailed(
@@ -272,7 +261,7 @@ unsafe fn enum_display_monitors() -> Result<Vec<HMONITOR>, SysError> {
         &mut hmonitors as *mut _ as LPARAM,
     )
     .ok()
-    .map_err(|e| SysError::EnumDisplayMonitorsFailed(e))?;
+    .map_err(SysError::EnumDisplayMonitorsFailed)?;
     Ok(hmonitors)
 }
 
@@ -289,7 +278,7 @@ unsafe fn get_physical_monitors_from_hmonitor(
         &mut physical_number,
     ))
     .ok()
-    .map_err(|e| SysError::GetPhysicalMonitorsFailed(e))?;
+    .map_err(SysError::GetPhysicalMonitorsFailed)?;
     let mut raw_physical_monitors = vec![PHYSICAL_MONITOR::default(); physical_number as usize];
     // Allocate first so that pushing the wrapped handles always succeeds.
     let mut physical_monitors = Vec::with_capacity(raw_physical_monitors.len());
@@ -299,7 +288,7 @@ unsafe fn get_physical_monitors_from_hmonitor(
         raw_physical_monitors.as_mut_ptr(),
     ))
     .ok()
-    .map_err(|e| SysError::GetPhysicalMonitorsFailed(e))?;
+    .map_err(SysError::GetPhysicalMonitorsFailed)?;
     // Transform immediately into WrappedPhysicalMonitor so the handles don't leak
     raw_physical_monitors
         .into_iter()
@@ -319,11 +308,13 @@ unsafe fn get_display_devices_from_hmonitor(
     let info_ptr = &mut info as *mut _ as *mut MONITORINFO;
     GetMonitorInfoW(hmonitor, info_ptr)
         .ok()
-        .map_err(|e| SysError::GetMonitorInfoFailed(e))?;
+        .map_err(SysError::GetMonitorInfoFailed)?;
     Ok((0..)
         .map_while(|device_number| {
-            let mut device = DISPLAY_DEVICEW::default();
-            device.cb = size_of::<DISPLAY_DEVICEW>() as u32;
+            let mut device = DISPLAY_DEVICEW {
+                cb: size_of::<DISPLAY_DEVICEW>() as u32,
+                ..Default::default()
+            };
             EnumDisplayDevicesW(
                 PWSTR(info.szDevice.as_mut_ptr()),
                 device_number,
@@ -363,14 +354,14 @@ unsafe fn get_file_handle_for_display_device(
         }
         return Some(Err(SysError::OpeningMonitorDeviceInterfaceHandleFailed {
             device_name: wchar_to_string(&display_device.DeviceName),
-            source: e.into(),
+            source: e,
         }));
     }
     Some(Ok(WrappedFileHandle(handle)))
 }
 
 #[derive(Clone, Debug, Error)]
-pub enum SysError {
+pub(crate) enum SysError {
     #[error("Failed to enumerate device monitors")]
     EnumDisplayMonitorsFailed(#[source] WinError),
     #[error("Failed to get display config buffer sizes")]
@@ -489,7 +480,9 @@ impl DdcciBrightnessValues {
     }
 }
 
-fn ddcci_get_monitor_brightness(device: &Brightness) -> Result<DdcciBrightnessValues, SysError> {
+fn ddcci_get_monitor_brightness(
+    device: &BlockingDeviceImpl,
+) -> Result<DdcciBrightnessValues, SysError> {
     unsafe {
         let mut v = DdcciBrightnessValues::default();
         BOOL(GetMonitorBrightness(
@@ -507,7 +500,7 @@ fn ddcci_get_monitor_brightness(device: &Brightness) -> Result<DdcciBrightnessVa
     }
 }
 
-fn ddcci_set_monitor_brightness(device: &Brightness, value: u32) -> Result<(), SysError> {
+fn ddcci_set_monitor_brightness(device: &BlockingDeviceImpl, value: u32) -> Result<(), SysError> {
     unsafe {
         BOOL(SetMonitorBrightness(device.physical_monitor.0, value))
             .ok()
@@ -533,7 +526,7 @@ impl IoctlSupportedBrightnessLevels {
 }
 
 fn ioctl_query_supported_brightness(
-    device: &Brightness,
+    device: &BlockingDeviceImpl,
 ) -> Result<IoctlSupportedBrightnessLevels, SysError> {
     unsafe {
         let mut bytes_returned = 0;
@@ -560,7 +553,7 @@ fn ioctl_query_supported_brightness(
     }
 }
 
-fn ioctl_query_display_brightness(device: &Brightness) -> Result<u32, SysError> {
+fn ioctl_query_display_brightness(device: &BlockingDeviceImpl) -> Result<u32, SysError> {
     unsafe {
         let mut bytes_returned = 0;
         let mut display_brightness = DISPLAY_BRIGHTNESS::default();
@@ -595,7 +588,7 @@ fn ioctl_query_display_brightness(device: &Brightness) -> Result<u32, SysError> 
     }
 }
 
-fn ioctl_set_display_brightness(device: &Brightness, value: u8) -> Result<(), SysError> {
+fn ioctl_set_display_brightness(device: &BlockingDeviceImpl, value: u8) -> Result<(), SysError> {
     // Seems to currently be missing from metadata
     const DISPLAYPOLICY_BOTH: u8 = 3;
     unsafe {
@@ -629,32 +622,16 @@ fn ioctl_set_display_brightness(device: &Brightness, value: u8) -> Result<(), Sy
     }
 }
 
-#[async_trait]
-impl BrightnessExt for Brightness {
-    async fn device_description(&self) -> Result<String, Error> {
-        Ok(self.device_description.clone())
+impl BrightnessExt for BrightnessDevice {
+    fn device_description(&self) -> &str {
+        &self.0.device_description
     }
 
-    async fn device_registry_key(&self) -> Result<String, Error> {
-        Ok(self.device_key.clone())
+    fn device_registry_key(&self) -> &str {
+        &self.0.device_key
     }
 
-    async fn device_path(&self) -> Result<String, Error> {
-        Ok(self.device_path.clone())
-    }
-}
-
-#[async_trait]
-impl BrightnessExt for crate::BrightnessDevice {
-    async fn device_description(&self) -> Result<String, Error> {
-        self.0.device_description().await
-    }
-
-    async fn device_registry_key(&self) -> Result<String, Error> {
-        self.0.device_registry_key().await
-    }
-
-    async fn device_path(&self) -> Result<String, Error> {
-        self.0.device_path().await
+    fn device_path(&self) -> &str {
+        &self.0.device_path
     }
 }

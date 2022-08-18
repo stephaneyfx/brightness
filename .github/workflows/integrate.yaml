@@ -12,5 +12,9 @@ jobs:
         run: cargo fmt -- --check
       - name: Build
         run: cargo build
-      - name: Test
-        run: cargo test
+      - name: Test (No features)
+        run: cargo test --no-default-features
+      - name: Test (All features)
+        run: cargo test --all-features
+      - name: Check clippy
+        run: cargo clippy -- -D warnings

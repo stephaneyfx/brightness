@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Stephane Raux. Distributed under the 0BSD license.
+// Copyright (C) 2022 Stephane Raux & Contributors. Distributed under the 0BSD license.
 
 //! # Overview
 //! - [📦 crates.io](https://crates.io/crates/brightness)
@@ -12,17 +12,20 @@
 //! # Example
 //!
 //! ```rust
+//! #[cfg(feature = "async")]
+//! # mod doctest {
 //! use brightness::Brightness;
 //! use futures::TryStreamExt;
 //!
 //! async fn show_brightness() -> Result<(), brightness::Error> {
-//!     brightness::brightness_devices().try_for_each(|dev| async move {
+//!     brightness::brightness_devices().await.try_for_each(|dev| async move {
 //!         let name = dev.device_name().await?;
 //!         let value = dev.get().await?;
 //!         println!("Brightness of device {} is {}%", name, value);
 //!         Ok(())
 //!     }).await
 //! }
+//! # }
 //! ```
 //!
 //! # Linux
@@ -43,61 +46,76 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
-use async_trait::async_trait;
-use futures::{Stream, StreamExt};
 use std::error::Error as StdError;
 use thiserror::Error;
 
-#[cfg(target_os = "linux")]
-#[path = "linux.rs"]
-mod platform;
+pub mod blocking;
 
-#[cfg(windows)]
-#[path = "blocking/windows.rs"]
-mod platform;
-
-use platform::Brightness as Inner;
-
-#[cfg(windows)]
-pub use platform::BrightnessExt;
-
-/// Interface to get and set brightness
-#[async_trait]
-pub trait Brightness {
-    /// Returns the device name
-    async fn device_name(&self) -> Result<String, Error>;
-
-    /// Returns the current brightness as a percentage
-    async fn get(&self) -> Result<u32, Error>;
-
-    /// Sets the brightness as a percentage
-    async fn set(&mut self, percentage: u32) -> Result<(), Error>;
-}
-
-/// Brightness device
-#[derive(Debug)]
-pub struct BrightnessDevice(Inner);
-
-#[async_trait]
-impl Brightness for BrightnessDevice {
-    async fn device_name(&self) -> Result<String, Error> {
-        self.0.device_name().await
-    }
-
-    async fn get(&self) -> Result<u32, Error> {
-        self.0.get().await
-    }
-
-    async fn set(&mut self, percentage: u32) -> Result<(), Error> {
-        self.0.set(percentage).await
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+cfg_if::cfg_if! {
+    if #[cfg(target_os = "linux")] {
+        mod linux;
+        use self::linux as platform;
+    } else if #[cfg(windows)] {
+        pub mod windows;
+        use self::windows as platform;
+    } else {
+        compile_error!("unsupported platform");
     }
 }
 
-/// Returns all brightness devices on the running system
-pub fn brightness_devices() -> impl Stream<Item = Result<BrightnessDevice, Error>> {
-    platform::brightness_devices().map(|r| r.map(BrightnessDevice).map_err(Into::into))
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+mod azync {
+    use super::*;
+    use async_trait::async_trait;
+    use futures::{Stream, StreamExt};
+
+    /// Async interface to get and set brightness.
+    #[async_trait]
+    pub trait Brightness {
+        /// Returns the device name.
+        async fn device_name(&self) -> Result<String, Error>;
+
+        /// Returns the current brightness as a percentage.
+        async fn get(&self) -> Result<u32, Error>;
+
+        /// Sets the brightness as a percentage.
+        async fn set(&mut self, percentage: u32) -> Result<(), Error>;
+    }
+
+    /// Async Brightness device.
+    #[derive(Debug)]
+    pub struct BrightnessDevice(pub(crate) platform::AsyncDeviceImpl);
+
+    #[async_trait]
+    impl Brightness for BrightnessDevice {
+        async fn device_name(&self) -> Result<String, Error> {
+            self.0.device_name().await
+        }
+
+        async fn get(&self) -> Result<u32, Error> {
+            self.0.get().await
+        }
+
+        async fn set(&mut self, percentage: u32) -> Result<(), Error> {
+            self.0.set(percentage).await
+        }
+    }
+
+    /// Asynchronously returns all brightness devices on the running system.
+    pub async fn brightness_devices() -> impl Stream<Item = Result<BrightnessDevice, Error>> {
+        platform::brightness_devices()
+            .await
+            .map(|r| r.map(BrightnessDevice).map_err(Into::into))
+    }
 }
+
+#[cfg(feature = "async")]
+pub use azync::*;
 
 /// Errors used in this API
 #[derive(Debug, Error)]
