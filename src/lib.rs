@@ -12,13 +12,13 @@
 //! # Example
 //!
 //! ```rust
-//! #[cfg(feature = "async")]
+//! # #[cfg(feature = "async")]
 //! # mod doctest {
 //! use brightness::Brightness;
 //! use futures::TryStreamExt;
 //!
 //! async fn show_brightness() -> Result<(), brightness::Error> {
-//!     brightness::brightness_devices().await.try_for_each(|dev| async move {
+//!     brightness::brightness_devices().try_for_each(|dev| async move {
 //!         let name = dev.device_name().await?;
 //!         let value = dev.get().await?;
 //!         println!("Brightness of device {} is {}%", name, value);
@@ -46,7 +46,7 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(doc_cfg, feature(doc_cfg))]
 
 use std::error::Error as StdError;
 use thiserror::Error;
@@ -54,7 +54,7 @@ use thiserror::Error;
 pub mod blocking;
 
 #[cfg(feature = "async")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "async")))]
 cfg_if::cfg_if! {
     if #[cfg(target_os = "linux")] {
         mod linux;
@@ -68,9 +68,9 @@ cfg_if::cfg_if! {
 }
 
 #[cfg(feature = "async")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-mod azync {
-    use super::*;
+#[cfg_attr(doc_cfg, doc(cfg(feature = "async")))]
+mod r#async {
+    use super::{platform, Error};
     use async_trait::async_trait;
     use futures::{Stream, StreamExt};
 
@@ -87,7 +87,7 @@ mod azync {
         async fn set(&mut self, percentage: u32) -> Result<(), Error>;
     }
 
-    /// Async Brightness device.
+    /// Async brightness device.
     #[derive(Debug)]
     pub struct BrightnessDevice(pub(crate) platform::AsyncDeviceImpl);
 
@@ -106,16 +106,14 @@ mod azync {
         }
     }
 
-    /// Asynchronously returns all brightness devices on the running system.
-    pub async fn brightness_devices() -> impl Stream<Item = Result<BrightnessDevice, Error>> {
-        platform::brightness_devices()
-            .await
-            .map(|r| r.map(BrightnessDevice).map_err(Into::into))
+    /// Returns all brightness devices on the running system.
+    pub fn brightness_devices() -> impl Stream<Item = Result<BrightnessDevice, Error>> {
+        platform::brightness_devices().map(|r| r.map(BrightnessDevice).map_err(Into::into))
     }
 }
 
 #[cfg(feature = "async")]
-pub use azync::*;
+pub use r#async::{brightness_devices, Brightness, BrightnessDevice};
 
 /// Errors used in this API
 #[derive(Debug, Error)]

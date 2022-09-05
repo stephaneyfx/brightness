@@ -7,7 +7,6 @@ fn main() {
 
 async fn run() {
     let count = brightness::brightness_devices()
-        .await
         .try_fold(0, |count, dev| async move {
             show_brightness(&dev).await?;
             Ok(count + 1)
@@ -27,8 +26,14 @@ async fn show_brightness(dev: &BrightnessDevice) -> Result<(), brightness::Error
 #[cfg(windows)]
 async fn show_platform_specific_info(dev: &BrightnessDevice) -> Result<(), brightness::Error> {
     use brightness::windows::BrightnessExt;
-    println!("\tDevice description = {}", dev.device_description());
-    println!("\tDevice registry key = {}", dev.device_registry_key());
+    println!(
+        "\tDevice description = {}",
+        dev.device_description().unwrap()
+    );
+    println!(
+        "\tDevice registry key = {}",
+        dev.device_registry_key().unwrap()
+    );
     Ok(())
 }
 

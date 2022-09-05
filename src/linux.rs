@@ -2,7 +2,10 @@
 
 //! Platform-specific implementation for Linux.
 
-use crate::blocking::linux::{read_value, SysError, Value, BACKLIGHT_DIR};
+use crate::blocking::linux::{
+    read_value, SysError, Value, BACKLIGHT_DIR, SESSION_INTERFACE, SESSION_OBJECT_PATH,
+    SET_BRIGHTNESS_METHOD, USER_DBUS_NAME,
+};
 use crate::Error;
 use async_trait::async_trait;
 use blocking_crate::unblock;
@@ -43,10 +46,10 @@ impl crate::Brightness for AsyncDeviceImpl {
             })?;
         let response = bus
             .call_method(
-                Some("org.freedesktop.login1"),
-                "/org/freedesktop/login1/session/auto",
-                Some("org.freedesktop.login1.Session"),
-                "SetBrightness",
+                Some(USER_DBUS_NAME),
+                SESSION_OBJECT_PATH,
+                Some(SESSION_INTERFACE),
+                SET_BRIGHTNESS_METHOD,
                 &desired,
             )
             .await;
@@ -67,7 +70,7 @@ impl crate::Brightness for AsyncDeviceImpl {
     }
 }
 
-pub(crate) async fn brightness_devices() -> impl Stream<Item = Result<AsyncDeviceImpl, SysError>> {
+pub(crate) fn brightness_devices() -> impl Stream<Item = Result<AsyncDeviceImpl, SysError>> {
     match std::fs::read_dir(BACKLIGHT_DIR) {
         Ok(devices) => futures::stream::iter(
             devices
@@ -93,9 +96,5 @@ pub(crate) async fn brightness_devices() -> impl Stream<Item = Result<AsyncDevic
 }
 
 async fn set_value(device: String, value: u32) -> Result<(), SysError> {
-    unblock(move || {
-        let device = device;
-        crate::blocking::linux::set_value(&device, value)
-    })
-    .await
+    unblock(move || crate::blocking::linux::set_value(&device, value)).await
 }

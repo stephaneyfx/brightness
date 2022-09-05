@@ -3,10 +3,14 @@
 //! Platform-specific implementation for Linux.
 
 use crate::Error;
-use std::path::PathBuf;
-use std::{fs, io};
+use itertools::Either;
+use std::{fs, io, iter::once, path::PathBuf};
 
 pub(crate) const BACKLIGHT_DIR: &str = "/sys/class/backlight";
+pub(crate) const USER_DBUS_NAME: &str = "org.freedesktop.login1";
+pub(crate) const SESSION_OBJECT_PATH: &str = "/org/freedesktop/login1/session/auto";
+pub(crate) const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
+pub(crate) const SET_BRIGHTNESS_METHOD: &str = "SetBrightness";
 
 #[derive(Debug)]
 pub(crate) struct BlockingDeviceImpl {
@@ -40,10 +44,10 @@ impl crate::blocking::Brightness for BlockingDeviceImpl {
                 source: e.into(),
             })?;
         let response = bus.call_method(
-            Some("org.freedesktop.login1"),
-            "/org/freedesktop/login1/session/auto",
-            Some("org.freedesktop.login1.Session"),
-            "SetBrightness",
+            Some(USER_DBUS_NAME),
+            SESSION_OBJECT_PATH,
+            Some(SESSION_INTERFACE),
+            SET_BRIGHTNESS_METHOD,
             &desired,
         );
         match response {
@@ -63,23 +67,25 @@ impl crate::blocking::Brightness for BlockingDeviceImpl {
     }
 }
 
-pub(crate) fn brightness_devices() -> Result<Vec<BlockingDeviceImpl>, SysError> {
+pub(crate) fn brightness_devices() -> impl Iterator<Item = Result<BlockingDeviceImpl, SysError>> {
     match fs::read_dir(BACKLIGHT_DIR) {
-        Ok(devices) => devices
-            .filter_map(|device| {
-                let device = match device {
-                    Ok(d) => d,
-                    Err(e) => return Some(Err(SysError::ReadingBacklightDirFailed(e))),
-                };
-                let path = device.path();
-                let keep = path.join(Value::Actual.as_str()).exists()
-                    && path.join(Value::Max.as_str()).exists();
-                keep.then(|| device.file_name().into_string().ok())
-                    .flatten()
-                    .map(|device| Ok(BlockingDeviceImpl { device }))
-            })
-            .collect::<Result<Vec<_>, _>>(),
-        Err(e) => Err(SysError::ReadingBacklightDirFailed(e)),
+        Ok(devices) => Either::Left(
+            devices
+                .map(|device| {
+                    let device = device.map_err(SysError::ReadingBacklightDirFailed)?;
+                    let path = device.path();
+                    let keep = path.join(Value::Actual.as_str()).exists()
+                        && path.join(Value::Max.as_str()).exists();
+                    Ok(device
+                        .file_name()
+                        .into_string()
+                        .ok()
+                        .map(|device| BlockingDeviceImpl { device })
+                        .filter(|_| keep))
+                })
+                .filter_map(Result::transpose),
+        ),
+        Err(e) => Either::Right(once(Err(SysError::ReadingBacklightDirFailed(e)))),
     }
 }
 
@@ -144,7 +150,7 @@ impl From<SysError> for Error {
 
 /// Reads a backlight device brightness value from the filesystem.
 ///
-/// Note: Even though this makes a call to std::fs, we are communicating with a kernel pseudo file
+/// Note: Even though this makes a call to `std::fs`, we are communicating with a kernel pseudo file
 /// system so it is safe to call from an async context.
 pub(crate) fn read_value(device: &str, name: Value) -> Result<u32, SysError> {
     let path = [BACKLIGHT_DIR, device, name.as_str()]

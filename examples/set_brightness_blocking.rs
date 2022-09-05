@@ -3,8 +3,7 @@ use std::env;
 
 fn main() {
     let percentage = env::args()
-        .skip(1)
-        .next()
+        .nth(1)
         .and_then(|a| a.parse().ok())
         .expect("Desired brightness percentage must be given as parameter");
     run(percentage);
@@ -12,9 +11,8 @@ fn main() {
 
 fn run(percentage: u32) {
     brightness::blocking::brightness_devices()
-        .unwrap()
-        .iter()
         .try_for_each(|dev| {
+            let dev = dev.unwrap();
             show_brightness(&dev)?;
             dev.set(percentage)?;
             show_brightness(&dev)

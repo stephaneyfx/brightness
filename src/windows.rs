@@ -2,13 +2,14 @@
 
 //! Platform-specific implementation for Windows.
 
+pub use crate::blocking::windows::BrightnessExt;
+
 use crate::blocking::windows::{BlockingDeviceImpl, SysError};
 use crate::blocking::Brightness;
 use crate::{BrightnessDevice, Error};
 use async_trait::async_trait;
 use blocking_crate::unblock;
-use futures::{stream, Stream, StreamExt};
-use std::future::ready;
+use futures::{stream, FutureExt, Stream, StreamExt};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -33,28 +34,24 @@ impl crate::Brightness for AsyncDeviceImpl {
     }
 }
 
-pub(crate) async fn brightness_devices() -> impl Stream<Item = Result<AsyncDeviceImpl, SysError>> {
-    let devices = unblock(crate::blocking::windows::brightness_devices).await;
-    match devices {
-        Ok(devices) => stream::iter(devices)
-            .map(|d| Ok(AsyncDeviceImpl(Arc::new(d))))
-            .left_stream(),
-        Err(err) => stream::once(ready(Err(err))).right_stream(),
-    }
+pub(crate) fn brightness_devices() -> impl Stream<Item = Result<AsyncDeviceImpl, SysError>> {
+    unblock(crate::blocking::windows::brightness_devices)
+        .into_stream()
+        .map(stream::iter)
+        .flatten()
+        .map(|d| d.map(|d| AsyncDeviceImpl(Arc::new(d))).map_err(Into::into))
 }
 
-pub use crate::blocking::windows::BrightnessExt;
-
 impl BrightnessExt for BrightnessDevice {
-    fn device_description(&self) -> &str {
-        &self.0 .0.device_description
+    fn device_description(&self) -> Result<String, Error> {
+        Ok(self.0 .0.device_description.clone())
     }
 
-    fn device_registry_key(&self) -> &str {
-        &self.0 .0.device_key
+    fn device_registry_key(&self) -> Result<String, Error> {
+        Ok(self.0 .0.device_key.clone())
     }
 
-    fn device_path(&self) -> &str {
-        &self.0 .0.device_path
+    fn device_path(&self) -> Result<String, Error> {
+        Ok(self.0 .0.device_path.clone())
     }
 }

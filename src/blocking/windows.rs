@@ -4,11 +4,12 @@
 
 use crate::blocking::BrightnessDevice;
 use crate::Error;
-use itertools::Itertools;
-use std::collections::HashMap;
+use itertools::Either;
 use std::{
+    collections::HashMap,
     ffi::{c_void, OsString},
     fmt,
+    iter::once,
     mem::size_of,
     os::windows::ffi::OsStringExt,
     ptr,
@@ -46,13 +47,13 @@ use windows::Win32::{
 /// Windows-specific brightness functionality.
 pub trait BrightnessExt {
     /// Returns device description
-    fn device_description(&self) -> &str;
+    fn device_description(&self) -> Result<String, Error>;
 
     /// Returns the device registry key
-    fn device_registry_key(&self) -> &str;
+    fn device_registry_key(&self) -> Result<String, Error>;
 
     /// Returns the device path
-    fn device_path(&self) -> &str;
+    fn device_path(&self) -> Result<String, Error>;
 }
 
 #[derive(Debug)]
@@ -142,51 +143,59 @@ impl crate::blocking::Brightness for BlockingDeviceImpl {
     }
 }
 
-pub(crate) fn brightness_devices() -> Result<Vec<BlockingDeviceImpl>, SysError> {
+pub(crate) fn brightness_devices() -> impl Iterator<Item = Result<BlockingDeviceImpl, SysError>> {
     unsafe {
-        let device_info_map = get_device_info_map()?;
-        let hmonitors = enum_display_monitors()?;
-        hmonitors
-            .into_iter()
-            .map(move |hmonitor| -> Result<Vec<BlockingDeviceImpl>, SysError> {
-                let physical_monitors = get_physical_monitors_from_hmonitor(hmonitor)?;
-                let display_devices = get_display_devices_from_hmonitor(hmonitor)?;
-                if display_devices.len() != physical_monitors.len() {
-                    // There doesn't seem to be any way to directly associate a physical monitor
-                    // handle with the equivalent display device, other than by array indexing
-                    // https://stackoverflow.com/questions/63095216/how-to-associate-physical-monitor-with-monitor-deviceid
-                    return Err(SysError::EnumerationMismatch);
-                }
-                physical_monitors
-                    .into_iter()
-                    .zip(display_devices)
-                    .filter_map(|(physical_monitor, mut display_device)| -> Option<Result<BlockingDeviceImpl, SysError>>{
-                        let file_handle =
-                            match get_file_handle_for_display_device(&mut display_device) {
-                                None => return None,
-                                Some(h) => match h {
-                                    Ok(h) => h,
-                                    Err(e) => return Some(Err(e)),
-                                },
-                            };
-                        let info = match device_info_map.get(&display_device.DeviceID) {
-                            None => return Some(Err(SysError::DeviceInfoMissing)),
-                            Some(d) => d,
-                        };
-                        Some(Ok(BlockingDeviceImpl {
-                            physical_monitor,
-                            file_handle,
-                            device_name: wchar_to_string(&display_device.DeviceName),
-                            device_description: wchar_to_string(&display_device.DeviceString),
-                            device_key: wchar_to_string(&display_device.DeviceKey),
-                            device_path: wchar_to_string(&display_device.DeviceID),
-                            output_technology: info.outputTechnology,
-                        }))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .flatten_ok()
-            .collect::<Result<Vec<_>, _>>()
+        let device_info_map = match get_device_info_map() {
+            Ok(info) => info,
+            Err(e) => return Either::Right(once(Err(e))),
+        };
+        let hmonitors = match enum_display_monitors() {
+            Ok(monitors) => monitors,
+            Err(e) => return Either::Right(once(Err(e))),
+        };
+        Either::Left(hmonitors.into_iter().flat_map(move |hmonitor| {
+            let physical_monitors = match get_physical_monitors_from_hmonitor(hmonitor) {
+                Ok(p) => p,
+                Err(e) => return vec![Err(e)],
+            };
+            let display_devices = match get_display_devices_from_hmonitor(hmonitor) {
+                Ok(p) => p,
+                Err(e) => return vec![Err(e)],
+            };
+            if display_devices.len() != physical_monitors.len() {
+                // There doesn't seem to be any way to directly associate a physical monitor
+                // handle with the equivalent display device, other than by array indexing
+                // https://stackoverflow.com/questions/63095216/how-to-associate-physical-monitor-with-monitor-deviceid
+                return vec![Err(SysError::EnumerationMismatch)];
+            }
+            physical_monitors
+                .into_iter()
+                .zip(display_devices)
+                .filter_map(|(physical_monitor, mut display_device)| {
+                    let file_handle = match get_file_handle_for_display_device(&mut display_device)
+                    {
+                        None => return None,
+                        Some(h) => match h {
+                            Ok(h) => h,
+                            Err(e) => return Some(Err(e)),
+                        },
+                    };
+                    let info = match device_info_map.get(&display_device.DeviceID) {
+                        None => return Some(Err(SysError::DeviceInfoMissing)),
+                        Some(d) => d,
+                    };
+                    Some(Ok(BlockingDeviceImpl {
+                        physical_monitor,
+                        file_handle,
+                        device_name: wchar_to_string(&display_device.DeviceName),
+                        device_description: wchar_to_string(&display_device.DeviceString),
+                        device_key: wchar_to_string(&display_device.DeviceKey),
+                        device_path: wchar_to_string(&display_device.DeviceID),
+                        output_technology: info.outputTechnology,
+                    }))
+                })
+                .collect()
+        }))
     }
 }
 
@@ -623,15 +632,15 @@ fn ioctl_set_display_brightness(device: &BlockingDeviceImpl, value: u8) -> Resul
 }
 
 impl BrightnessExt for BrightnessDevice {
-    fn device_description(&self) -> &str {
-        &self.0.device_description
+    fn device_description(&self) -> Result<String, Error> {
+        Ok(self.0.device_description.clone())
     }
 
-    fn device_registry_key(&self) -> &str {
-        &self.0.device_key
+    fn device_registry_key(&self) -> Result<String, Error> {
+        Ok(self.0.device_key.clone())
     }
 
-    fn device_path(&self) -> &str {
-        &self.0.device_path
+    fn device_path(&self) -> Result<String, Error> {
+        Ok(self.0.device_path.clone())
     }
 }

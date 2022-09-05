@@ -16,7 +16,7 @@ cfg_if::cfg_if! {
     }
 }
 
-/// Blocking Brightness device.
+/// Blocking brightness device.
 #[derive(Debug)]
 pub struct BrightnessDevice(platform::BlockingDeviceImpl);
 
@@ -47,8 +47,6 @@ impl Brightness for BrightnessDevice {
 }
 
 /// Blocking function that returns all brightness devices on the running system.
-pub fn brightness_devices() -> Result<Vec<BrightnessDevice>, Error> {
-    platform::brightness_devices()
-        .map(|r| r.into_iter().map(BrightnessDevice).collect())
-        .map_err(Into::into)
+pub fn brightness_devices() -> impl Iterator<Item = Result<BrightnessDevice, Error>> {
+    platform::brightness_devices().map(|r| r.map(BrightnessDevice).map_err(Into::into))
 }
