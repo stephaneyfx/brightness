@@ -26,14 +26,8 @@ async fn show_brightness(dev: &BrightnessDevice) -> Result<(), brightness::Error
 #[cfg(windows)]
 async fn show_platform_specific_info(dev: &BrightnessDevice) -> Result<(), brightness::Error> {
     use brightness::windows::BrightnessExt;
-    println!(
-        "\tDevice description = {}",
-        dev.device_description().unwrap()
-    );
-    println!(
-        "\tDevice registry key = {}",
-        dev.device_registry_key().unwrap()
-    );
+    println!("\tDevice description = {}", dev.device_description()?);
+    println!("\tDevice registry key = {}", dev.device_registry_key()?);
     Ok(())
 }
 

@@ -12,7 +12,7 @@ fn main() {
 fn run(percentage: u32) {
     brightness::blocking::brightness_devices()
         .try_for_each(|dev| {
-            let dev = dev.unwrap();
+            let dev = dev?;
             show_brightness(&dev)?;
             dev.set(percentage)?;
             show_brightness(&dev)

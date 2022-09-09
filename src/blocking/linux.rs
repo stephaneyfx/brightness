@@ -104,7 +104,6 @@ impl Value {
     }
 }
 
-#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Error)]
 pub(crate) enum SysError {
     #[error("Failed to read {} directory", BACKLIGHT_DIR)]

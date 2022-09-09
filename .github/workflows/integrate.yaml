@@ -17,4 +17,5 @@ jobs:
       - name: Test (All features)
         run: cargo test --all-features
       - name: Check clippy
-        run: cargo clippy --all-features --all-targets -- -D warnings
+        run: cargo clippy --all-features --all-targets -- -D warnings -A clippy::enum_variant_names
+
