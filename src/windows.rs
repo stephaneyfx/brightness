@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Stephane Raux & Contributors. Distributed under the 0BSD license.
+// Copyright (C) 2022 The brightness project authors. Distributed under the 0BSD license.
 
 //! Platform-specific implementation for Windows.
 
