@@ -4,11 +4,15 @@
 
 pub use crate::blocking::windows::BrightnessExt;
 
-use crate::blocking::windows::{BlockingDeviceImpl, SysError};
-use crate::blocking::Brightness;
-use crate::{BrightnessDevice, Error};
+use crate::{
+    blocking::{
+        windows::{BlockingDeviceImpl, SysError},
+        Brightness,
+    },
+    BrightnessDevice, Error,
+};
 use async_trait::async_trait;
-use blocking_crate::unblock;
+use blocking::unblock;
 use futures::{stream, FutureExt, Stream, StreamExt};
 use std::sync::Arc;
 

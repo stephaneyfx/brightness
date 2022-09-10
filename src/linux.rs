@@ -2,13 +2,15 @@
 
 //! Platform-specific implementation for Linux.
 
-use crate::blocking::linux::{
-    read_value, SysError, Value, BACKLIGHT_DIR, SESSION_INTERFACE, SESSION_OBJECT_PATH,
-    SET_BRIGHTNESS_METHOD, USER_DBUS_NAME,
+use crate::{
+    blocking::linux::{
+        read_value, SysError, Value, BACKLIGHT_DIR, SESSION_INTERFACE, SESSION_OBJECT_PATH,
+        SET_BRIGHTNESS_METHOD, USER_DBUS_NAME,
+    },
+    Error,
 };
-use crate::Error;
 use async_trait::async_trait;
-use blocking_crate::unblock;
+use blocking::unblock;
 use futures::{future::ready, Stream, StreamExt};
 
 #[derive(Debug)]
