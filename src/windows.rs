@@ -11,7 +11,6 @@ use crate::{
     },
     BrightnessDevice, Error,
 };
-use async_trait::async_trait;
 use blocking::unblock;
 use futures::{stream, FutureExt, Stream, StreamExt};
 use std::sync::Arc;
@@ -21,7 +20,6 @@ pub(crate) struct AsyncDeviceImpl(Arc<BlockingDeviceImpl>);
 
 // Windows doesn't have an async C API for monitors, so we will instead spawn the blocking tasks on
 // background threads.
-#[async_trait]
 impl crate::Brightness for AsyncDeviceImpl {
     async fn device_name(&self) -> Result<String, Error> {
         self.0.device_name()

@@ -71,27 +71,25 @@ cfg_if::cfg_if! {
 #[cfg_attr(doc_cfg, doc(cfg(feature = "async")))]
 mod r#async {
     use super::{platform, Error};
-    use async_trait::async_trait;
     use futures::{Stream, StreamExt};
+    use std::future::Future;
 
     /// Async interface to get and set brightness.
-    #[async_trait]
     pub trait Brightness {
         /// Returns the device name.
-        async fn device_name(&self) -> Result<String, Error>;
+        fn device_name(&self) -> impl Future<Output = Result<String, Error>> + Send;
 
         /// Returns the current brightness as a percentage.
-        async fn get(&self) -> Result<u32, Error>;
+        fn get(&self) -> impl Future<Output = Result<u32, Error>> + Send;
 
         /// Sets the brightness as a percentage.
-        async fn set(&mut self, percentage: u32) -> Result<(), Error>;
+        fn set(&mut self, percentage: u32) -> impl Future<Output = Result<(), Error>> + Send;
     }
 
     /// Async brightness device.
     #[derive(Debug)]
     pub struct BrightnessDevice(pub(crate) platform::AsyncDeviceImpl);
 
-    #[async_trait]
     impl Brightness for BrightnessDevice {
         async fn device_name(&self) -> Result<String, Error> {
             self.0.device_name().await

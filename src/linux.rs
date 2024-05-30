@@ -9,7 +9,6 @@ use crate::{
     },
     Error,
 };
-use async_trait::async_trait;
 use blocking::unblock;
 use futures::{future::ready, Stream, StreamExt};
 
@@ -18,7 +17,6 @@ pub(crate) struct AsyncDeviceImpl {
     device: String,
 }
 
-#[async_trait]
 impl crate::Brightness for AsyncDeviceImpl {
     async fn device_name(&self) -> Result<String, Error> {
         Ok(self.device.clone())

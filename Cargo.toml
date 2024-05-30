@@ -11,11 +11,10 @@ documentation = "https://docs.rs/brightness"
 keywords = ["brightness", "backlight"]
 
 [features]
-async = ["async-trait", "futures", "blocking"]
+async = ["futures", "blocking"]
 default = ["async"]
 
 [dependencies]
-async-trait = { version = "0.1.80", optional = true }
 blocking = { version = "1.6.1", optional = true }
 cfg-if = "1.0.0"
 futures = { version = "0.3.30", optional = true }
