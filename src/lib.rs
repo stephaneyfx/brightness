@@ -46,7 +46,7 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-#![cfg_attr(doc_cfg, feature(doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use std::error::Error as StdError;
 use thiserror::Error;
@@ -54,7 +54,7 @@ use thiserror::Error;
 pub mod blocking;
 
 #[cfg(feature = "async")]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "async")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 cfg_if::cfg_if! {
     if #[cfg(target_os = "linux")] {
         mod linux;
@@ -68,7 +68,7 @@ cfg_if::cfg_if! {
 }
 
 #[cfg(feature = "async")]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "async")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 mod r#async {
     use super::{platform, Error};
     use futures::{Stream, StreamExt};
