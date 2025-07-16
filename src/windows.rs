@@ -5,14 +5,14 @@
 pub use crate::blocking::windows::BrightnessExt;
 
 use crate::{
-    blocking::{
-        windows::{BlockingDeviceImpl, SysError},
-        Brightness,
-    },
     BrightnessDevice, Error,
+    blocking::{
+        Brightness,
+        windows::{BlockingDeviceImpl, SysError},
+    },
 };
 use blocking::unblock;
-use futures::{stream, FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt, stream};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -46,14 +46,14 @@ pub(crate) fn brightness_devices() -> impl Stream<Item = Result<AsyncDeviceImpl,
 
 impl BrightnessExt for BrightnessDevice {
     fn device_description(&self) -> Result<String, Error> {
-        Ok(self.0 .0.device_description.clone())
+        Ok(self.0.0.device_description.clone())
     }
 
     fn device_registry_key(&self) -> Result<String, Error> {
-        Ok(self.0 .0.device_key.clone())
+        Ok(self.0.0.device_key.clone())
     }
 
     fn device_path(&self) -> Result<String, Error> {
-        Ok(self.0 .0.device_path.clone())
+        Ok(self.0.0.device_path.clone())
     }
 }

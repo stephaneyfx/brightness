@@ -3,14 +3,14 @@
 //! Platform-specific implementation for Linux.
 
 use crate::{
-    blocking::linux::{
-        read_value, SysError, Value, BACKLIGHT_DIR, SESSION_INTERFACE, SESSION_OBJECT_PATH,
-        SET_BRIGHTNESS_METHOD, USER_DBUS_NAME,
-    },
     Error,
+    blocking::linux::{
+        BACKLIGHT_DIR, SESSION_INTERFACE, SESSION_OBJECT_PATH, SET_BRIGHTNESS_METHOD, SysError,
+        USER_DBUS_NAME, Value, read_value,
+    },
 };
 use blocking::unblock;
-use futures::{future::ready, Stream, StreamExt};
+use futures::{Stream, StreamExt, future::ready};
 
 #[derive(Debug)]
 pub(crate) struct AsyncDeviceImpl {

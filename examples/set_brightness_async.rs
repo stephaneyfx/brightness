@@ -1,5 +1,5 @@
 use brightness::{Brightness, BrightnessDevice};
-use futures::{executor::block_on, TryStreamExt};
+use futures::{TryStreamExt, executor::block_on};
 use std::env;
 
 fn main() {

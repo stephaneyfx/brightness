@@ -70,7 +70,7 @@ cfg_if::cfg_if! {
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 mod r#async {
-    use super::{platform, Error};
+    use super::{Error, platform};
     use futures::{Stream, StreamExt};
     use std::future::Future;
 
@@ -111,7 +111,7 @@ mod r#async {
 }
 
 #[cfg(feature = "async")]
-pub use r#async::{brightness_devices, Brightness, BrightnessDevice};
+pub use r#async::{Brightness, BrightnessDevice, brightness_devices};
 
 /// Errors used in this API
 #[derive(Debug, Error)]

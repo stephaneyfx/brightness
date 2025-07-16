@@ -2,11 +2,11 @@
 
 //! Platform-specific implementation for Windows.
 
-use crate::{blocking::BrightnessDevice, Error};
+use crate::{Error, blocking::BrightnessDevice};
 use itertools::Either;
 use std::{
     collections::HashMap,
-    ffi::{c_void, OsString},
+    ffi::{OsString, c_void},
     fmt,
     iter::once,
     mem::size_of,
@@ -14,28 +14,25 @@ use std::{
     ptr,
 };
 use windows::{
-    core::{Error as WinError, PCWSTR},
     Win32::{
         Devices::Display::{
-            DestroyPhysicalMonitor, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes,
-            GetMonitorBrightness, GetNumberOfPhysicalMonitorsFromHMONITOR,
-            GetPhysicalMonitorsFromHMONITOR, QueryDisplayConfig, SetMonitorBrightness,
-            DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_MODE_INFO,
+            DISPLAY_BRIGHTNESS, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_MODE_INFO,
             DISPLAYCONFIG_MODE_INFO_TYPE_TARGET, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL,
             DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_TARGET_DEVICE_NAME,
             DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY, DISPLAYPOLICY_AC, DISPLAYPOLICY_DC,
-            DISPLAY_BRIGHTNESS, IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS,
+            DestroyPhysicalMonitor, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes,
+            GetMonitorBrightness, GetNumberOfPhysicalMonitorsFromHMONITOR,
+            GetPhysicalMonitorsFromHMONITOR, IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS,
             IOCTL_VIDEO_QUERY_SUPPORTED_BRIGHTNESS, IOCTL_VIDEO_SET_DISPLAY_BRIGHTNESS,
-            PHYSICAL_MONITOR,
+            PHYSICAL_MONITOR, QueryDisplayConfig, SetMonitorBrightness,
         },
         Foundation::{
-            CloseHandle, BOOL, ERROR_ACCESS_DENIED, ERROR_SUCCESS, HANDLE, LPARAM, RECT,
+            BOOL, CloseHandle, ERROR_ACCESS_DENIED, ERROR_SUCCESS, HANDLE, LPARAM, RECT,
             WIN32_ERROR,
         },
         Graphics::Gdi::{
-            EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW,
-            DISPLAY_DEVICE_ACTIVE, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
-            QDC_ONLY_ACTIVE_PATHS,
+            DISPLAY_DEVICE_ACTIVE, DISPLAY_DEVICEW, EnumDisplayDevicesW, EnumDisplayMonitors,
+            GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW, QDC_ONLY_ACTIVE_PATHS,
         },
         Storage::FileSystem::{
             CreateFileW, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -44,6 +41,7 @@ use windows::{
         System::IO::DeviceIoControl,
         UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME,
     },
+    core::{Error as WinError, PCWSTR},
 };
 
 /// Windows-specific brightness functionality.
@@ -84,7 +82,7 @@ struct WrappedPhysicalMonitor(HANDLE);
 
 impl fmt::Debug for WrappedPhysicalMonitor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0 .0)
+        write!(f, "{}", self.0.0)
     }
 }
 
@@ -101,7 +99,7 @@ struct WrappedFileHandle(HANDLE);
 
 impl fmt::Debug for WrappedFileHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0 .0)
+        write!(f, "{}", self.0.0)
     }
 }
 
@@ -201,8 +199,8 @@ pub(crate) fn brightness_devices() -> impl Iterator<Item = Result<BlockingDevice
 /// Returns a `HashMap` of Device Path to `DISPLAYCONFIG_TARGET_DEVICE_NAME`.\
 /// This can be used to find the `DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY` for a monitor.\
 /// The output technology is used to determine if a device is internal or external.
-unsafe fn get_device_info_map(
-) -> Result<HashMap<[u16; 128], DISPLAYCONFIG_TARGET_DEVICE_NAME>, SysError> {
+unsafe fn get_device_info_map()
+-> Result<HashMap<[u16; 128], DISPLAYCONFIG_TARGET_DEVICE_NAME>, SysError> {
     let mut path_count = 0;
     let mut mode_count = 0;
     check_status(
@@ -375,12 +373,12 @@ pub(crate) enum SysError {
     #[error("Failed to get physical monitors from the HMONITOR")]
     GetPhysicalMonitors(#[source] WinError),
     #[error(
-    "The length of GetPhysicalMonitorsFromHMONITOR() and EnumDisplayDevicesW() results did not \
+        "The length of GetPhysicalMonitorsFromHMONITOR() and EnumDisplayDevicesW() results did not \
      match, this could be because monitors were connected/disconnected while loading devices"
     )]
     EnumerationMismatch,
     #[error(
-    "Unable to find a matching device info for this display device, this could be because monitors \
+        "Unable to find a matching device info for this display device, this could be because monitors \
      were connected while loading devices"
     )]
     DeviceInfoMissing,
