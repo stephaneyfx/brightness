@@ -207,7 +207,7 @@ unsafe fn get_device_info_map(
     let mut mode_count = 0;
     check_status(
         GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count),
-        SysError::GetDisplayConfigBufferSizesFailed,
+        SysError::GetDisplayConfigBufferSizes,
     )?;
     let mut display_paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
     let mut display_modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
@@ -220,7 +220,7 @@ unsafe fn get_device_info_map(
             display_modes.as_mut_ptr(),
             std::ptr::null_mut(),
         ),
-        SysError::QueryDisplayConfigFailed,
+        SysError::QueryDisplayConfig,
     )?;
     display_modes
         .into_iter()
@@ -236,9 +236,7 @@ unsafe fn get_device_info_map(
                 ERROR_SUCCESS => Some(Ok((device_name.monitorDevicePath, device_name))),
                 // This error occurs if the calling process does not have access to the current desktop or is running on a remote session.
                 ERROR_ACCESS_DENIED => None,
-                _ => Some(Err(SysError::DisplayConfigGetDeviceInfoFailed(
-                    result.into(),
-                ))),
+                _ => Some(Err(SysError::DisplayConfigGetDeviceInfo(result.into()))),
             }
         })
         .collect()
@@ -266,7 +264,7 @@ unsafe fn enum_display_monitors() -> Result<Vec<HMONITOR>, SysError> {
         LPARAM(&mut hmonitors as *mut _ as isize),
     )
     .ok()
-    .map_err(SysError::EnumDisplayMonitorsFailed)?;
+    .map_err(SysError::EnumDisplayMonitors)?;
     Ok(hmonitors)
 }
 
@@ -283,7 +281,7 @@ unsafe fn get_physical_monitors_from_hmonitor(
         &mut physical_number,
     ))
     .ok()
-    .map_err(SysError::GetPhysicalMonitorsFailed)?;
+    .map_err(SysError::GetPhysicalMonitors)?;
     let mut raw_physical_monitors = vec![PHYSICAL_MONITOR::default(); physical_number as usize];
     // Allocate first so that pushing the wrapped handles always succeeds.
     let mut physical_monitors = Vec::with_capacity(raw_physical_monitors.len());
@@ -292,7 +290,7 @@ unsafe fn get_physical_monitors_from_hmonitor(
         &mut raw_physical_monitors,
     ))
     .ok()
-    .map_err(SysError::GetPhysicalMonitorsFailed)?;
+    .map_err(SysError::GetPhysicalMonitors)?;
     // Transform immediately into WrappedPhysicalMonitor so the handles don't leak
     raw_physical_monitors
         .into_iter()
@@ -312,7 +310,7 @@ unsafe fn get_display_devices_from_hmonitor(
     let info_ptr = &mut info as *mut _ as *mut MONITORINFO;
     GetMonitorInfoW(hmonitor, info_ptr)
         .ok()
-        .map_err(SysError::GetMonitorInfoFailed)?;
+        .map_err(SysError::GetMonitorInfo)?;
     Ok((0..)
         .map_while(|device_number| {
             let mut device = DISPLAY_DEVICEW {
@@ -355,7 +353,7 @@ unsafe fn get_file_handle_for_display_device(
         // sessions - they are not real monitors
         (e.code() == ERROR_ACCESS_DENIED.to_hresult())
             .then_some(None)
-            .ok_or_else(|| SysError::OpeningMonitorDeviceInterfaceHandleFailed {
+            .ok_or_else(|| SysError::OpeningMonitorDeviceInterfaceHandle {
                 device_name: wchar_to_string(&display_device.DeviceName),
                 source: e,
             })
@@ -365,17 +363,17 @@ unsafe fn get_file_handle_for_display_device(
 #[derive(Clone, Debug, Error)]
 pub(crate) enum SysError {
     #[error("Failed to enumerate device monitors")]
-    EnumDisplayMonitorsFailed(#[source] WinError),
+    EnumDisplayMonitors(#[source] WinError),
     #[error("Failed to get display config buffer sizes")]
-    GetDisplayConfigBufferSizesFailed(#[source] WinError),
+    GetDisplayConfigBufferSizes(#[source] WinError),
     #[error("Failed to query display config")]
-    QueryDisplayConfigFailed(#[source] WinError),
+    QueryDisplayConfig(#[source] WinError),
     #[error("Failed to get display config device info")]
-    DisplayConfigGetDeviceInfoFailed(#[source] WinError),
+    DisplayConfigGetDeviceInfo(#[source] WinError),
     #[error("Failed to get monitor info")]
-    GetMonitorInfoFailed(#[source] WinError),
+    GetMonitorInfo(#[source] WinError),
     #[error("Failed to get physical monitors from the HMONITOR")]
-    GetPhysicalMonitorsFailed(#[source] WinError),
+    GetPhysicalMonitors(#[source] WinError),
     #[error(
     "The length of GetPhysicalMonitorsFromHMONITOR() and EnumDisplayDevicesW() results did not \
      match, this could be because monitors were connected/disconnected while loading devices"
@@ -387,34 +385,34 @@ pub(crate) enum SysError {
     )]
     DeviceInfoMissing,
     #[error("Failed to open monitor interface handle (CreateFileW)")]
-    OpeningMonitorDeviceInterfaceHandleFailed {
+    OpeningMonitorDeviceInterfaceHandle {
         device_name: String,
         source: WinError,
     },
     #[error("Failed to query supported brightness (IOCTL)")]
-    IoctlQuerySupportedBrightnessFailed {
+    IoctlQuerySupportedBrightness {
         device_name: String,
         source: WinError,
     },
     #[error("Failed to query display brightness (IOCTL)")]
-    IoctlQueryDisplayBrightnessFailed {
+    IoctlQueryDisplayBrightness {
         device_name: String,
         source: WinError,
     },
     #[error("Unexpected response when querying display brightness (IOCTL)")]
     IoctlQueryDisplayBrightnessUnexpectedResponse { device_name: String },
     #[error("Failed to get monitor brightness (DDCCI)")]
-    GettingMonitorBrightnessFailed {
+    GettingMonitorBrightness {
         device_name: String,
         source: WinError,
     },
     #[error("Failed to set monitor brightness (IOCTL)")]
-    IoctlSetBrightnessFailed {
+    IoctlSetBrightness {
         device_name: String,
         source: WinError,
     },
     #[error("Failed to set monitor brightness (DDCCI)")]
-    SettingBrightnessFailed {
+    SettingBrightness {
         device_name: String,
         source: WinError,
     },
@@ -425,31 +423,27 @@ impl From<SysError> for Error {
         match &e {
             SysError::EnumerationMismatch
             | SysError::DeviceInfoMissing
-            | SysError::GetDisplayConfigBufferSizesFailed(..)
-            | SysError::QueryDisplayConfigFailed(..)
-            | SysError::DisplayConfigGetDeviceInfoFailed(..)
-            | SysError::GetPhysicalMonitorsFailed(..)
-            | SysError::EnumDisplayMonitorsFailed(..)
-            | SysError::GetMonitorInfoFailed(..)
-            | SysError::OpeningMonitorDeviceInterfaceHandleFailed { .. } => {
-                Error::ListingDevicesFailed(Box::new(e))
+            | SysError::GetDisplayConfigBufferSizes(..)
+            | SysError::QueryDisplayConfig(..)
+            | SysError::DisplayConfigGetDeviceInfo(..)
+            | SysError::GetPhysicalMonitors(..)
+            | SysError::EnumDisplayMonitors(..)
+            | SysError::GetMonitorInfo(..)
+            | SysError::OpeningMonitorDeviceInterfaceHandle { .. } => {
+                Error::ListingDevices(Box::new(e))
             }
-            SysError::IoctlQuerySupportedBrightnessFailed { device_name, .. }
-            | SysError::IoctlQueryDisplayBrightnessFailed { device_name, .. }
+            SysError::IoctlQuerySupportedBrightness { device_name, .. }
+            | SysError::IoctlQueryDisplayBrightness { device_name, .. }
             | SysError::IoctlQueryDisplayBrightnessUnexpectedResponse { device_name }
-            | SysError::GettingMonitorBrightnessFailed { device_name, .. } => {
-                Error::GettingDeviceInfoFailed {
-                    device: device_name.clone(),
-                    source: Box::new(e),
-                }
-            }
-            SysError::SettingBrightnessFailed { device_name, .. }
-            | SysError::IoctlSetBrightnessFailed { device_name, .. } => {
-                Error::SettingBrightnessFailed {
-                    device: device_name.clone(),
-                    source: Box::new(e),
-                }
-            }
+            | SysError::GettingMonitorBrightness { device_name, .. } => Error::GettingDeviceInfo {
+                device: device_name.clone(),
+                source: Box::new(e),
+            },
+            SysError::SettingBrightness { device_name, .. }
+            | SysError::IoctlSetBrightness { device_name, .. } => Error::SettingBrightness {
+                device: device_name.clone(),
+                source: Box::new(e),
+            },
         }
     }
 }
@@ -506,7 +500,7 @@ fn ddcci_get_monitor_brightness(
         ))
         .ok()
         .map(|_| v)
-        .map_err(|e| SysError::GettingMonitorBrightnessFailed {
+        .map_err(|e| SysError::GettingMonitorBrightness {
             device_name: device.device_name.clone(),
             source: e,
         })
@@ -517,7 +511,7 @@ fn ddcci_set_monitor_brightness(device: &BlockingDeviceImpl, value: u32) -> Resu
     unsafe {
         BOOL(SetMonitorBrightness(device.physical_monitor.0, value))
             .ok()
-            .map_err(|e| SysError::SettingBrightnessFailed {
+            .map_err(|e| SysError::SettingBrightness {
                 device_name: device.device_name.clone(),
                 source: e,
             })
@@ -559,7 +553,7 @@ fn ioctl_query_supported_brightness(
             out_buffer.set_len(bytes_returned as usize);
             IoctlSupportedBrightnessLevels(out_buffer)
         })
-        .map_err(|e| SysError::IoctlQuerySupportedBrightnessFailed {
+        .map_err(|e| SysError::IoctlQuerySupportedBrightness {
             device_name: device.device_name.clone(),
             source: e,
         })
@@ -581,7 +575,7 @@ fn ioctl_query_display_brightness(device: &BlockingDeviceImpl) -> Result<u32, Sy
             ptr::null_mut(),
         )
         .ok()
-        .map_err(|e| SysError::IoctlQueryDisplayBrightnessFailed {
+        .map_err(|e| SysError::IoctlQueryDisplayBrightness {
             device_name: device.device_name.clone(),
             source: e,
         })
@@ -628,7 +622,7 @@ fn ioctl_set_display_brightness(device: &BlockingDeviceImpl, value: u8) -> Resul
             // Doing a very tiny sleep seems to mitigate this
             std::thread::sleep(std::time::Duration::from_nanos(1));
         })
-        .map_err(|e| SysError::IoctlSetBrightnessFailed {
+        .map_err(|e| SysError::IoctlSetBrightness {
             device_name: device.device_name.clone(),
             source: e,
         })

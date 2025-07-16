@@ -119,11 +119,11 @@ pub use r#async::{brightness_devices, Brightness, BrightnessDevice};
 pub enum Error {
     /// Getting a list of brightness devices failed
     #[error("Failed to list brightness devices")]
-    ListingDevicesFailed(#[source] Box<dyn StdError + Send + Sync>),
+    ListingDevices(#[source] Box<dyn StdError + Send + Sync>),
 
     /// Getting device information failed
     #[error("Failed to get brightness device {device} information")]
-    GettingDeviceInfoFailed {
+    GettingDeviceInfo {
         /// Device name
         device: String,
         /// Cause
@@ -132,7 +132,7 @@ pub enum Error {
 
     /// Setting brightness failed
     #[error("Setting brightness failed for device {device}")]
-    SettingBrightnessFailed {
+    SettingBrightness {
         /// Device name
         device: String,
         /// Cause

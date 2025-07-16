@@ -13,7 +13,7 @@ async fn run() {
         })
         .await
         .unwrap();
-    println!("Found {} displays", count);
+    println!("Found {count} displays");
 }
 
 async fn show_brightness(dev: &BrightnessDevice) -> Result<(), brightness::Error> {

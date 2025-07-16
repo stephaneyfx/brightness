@@ -40,7 +40,7 @@ impl crate::Brightness for AsyncDeviceImpl {
         let desired = ("backlight", &self.device, desired_value);
         let bus = zbus::Connection::system()
             .await
-            .map_err(|e| Error::SettingBrightnessFailed {
+            .map_err(|e| Error::SettingBrightness {
                 device: self.device.clone(),
                 source: e.into(),
             })?;
@@ -62,7 +62,7 @@ impl crate::Brightness for AsyncDeviceImpl {
                 set_value(self.device.clone(), desired_value).await?;
                 Ok(())
             }
-            Err(e) => Err(Error::SettingBrightnessFailed {
+            Err(e) => Err(Error::SettingBrightness {
                 device: self.device.clone(),
                 source: e.into(),
             }),
@@ -75,7 +75,7 @@ pub(crate) fn brightness_devices() -> impl Stream<Item = Result<AsyncDeviceImpl,
         Ok(devices) => futures::stream::iter(
             devices
                 .map(|device| {
-                    let device = device.map_err(SysError::ReadingBacklightDirFailed)?;
+                    let device = device.map_err(SysError::ReadingBacklightDir)?;
                     let path = device.path();
                     let keep = path.join(Value::Actual.as_str()).exists()
                         && path.join(Value::Max.as_str()).exists();
@@ -89,9 +89,7 @@ pub(crate) fn brightness_devices() -> impl Stream<Item = Result<AsyncDeviceImpl,
                 .filter_map(Result::transpose),
         )
         .right_stream(),
-        Err(e) => {
-            futures::stream::once(ready(Err(SysError::ReadingBacklightDirFailed(e)))).left_stream()
-        }
+        Err(e) => futures::stream::once(ready(Err(SysError::ReadingBacklightDir(e)))).left_stream(),
     }
 }
 

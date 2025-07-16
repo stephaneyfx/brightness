@@ -38,11 +38,10 @@ impl crate::blocking::Brightness for BlockingDeviceImpl {
         let max = read_value(&self.device, Value::Max)?;
         let desired_value = (u64::from(percentage) * u64::from(max) / 100) as u32;
         let desired = ("backlight", &self.device, desired_value);
-        let bus =
-            zbus::blocking::Connection::system().map_err(|e| Error::SettingBrightnessFailed {
-                device: self.device.clone(),
-                source: e.into(),
-            })?;
+        let bus = zbus::blocking::Connection::system().map_err(|e| Error::SettingBrightness {
+            device: self.device.clone(),
+            source: e.into(),
+        })?;
         let response = bus.call_method(
             Some(USER_DBUS_NAME),
             SESSION_OBJECT_PATH,
@@ -59,7 +58,7 @@ impl crate::blocking::Brightness for BlockingDeviceImpl {
                 set_value(&self.device, desired_value)?;
                 Ok(())
             }
-            Err(e) => Err(Error::SettingBrightnessFailed {
+            Err(e) => Err(Error::SettingBrightness {
                 device: self.device.clone(),
                 source: e.into(),
             }),
@@ -72,7 +71,7 @@ pub(crate) fn brightness_devices() -> impl Iterator<Item = Result<BlockingDevice
         Ok(devices) => Either::Left(
             devices
                 .map(|device| {
-                    let device = device.map_err(SysError::ReadingBacklightDirFailed)?;
+                    let device = device.map_err(SysError::ReadingBacklightDir)?;
                     let path = device.path();
                     let keep = path.join(Value::Actual.as_str()).exists()
                         && path.join(Value::Max.as_str()).exists();
@@ -85,7 +84,7 @@ pub(crate) fn brightness_devices() -> impl Iterator<Item = Result<BlockingDevice
                 })
                 .filter_map(Result::transpose),
         ),
-        Err(e) => Either::Right(once(Err(SysError::ReadingBacklightDirFailed(e)))),
+        Err(e) => Either::Right(once(Err(SysError::ReadingBacklightDir(e)))),
     }
 }
 
@@ -107,21 +106,21 @@ impl Value {
 #[derive(Debug, Error)]
 pub(crate) enum SysError {
     #[error("Failed to read {} directory", BACKLIGHT_DIR)]
-    ReadingBacklightDirFailed(#[source] io::Error),
+    ReadingBacklightDir(#[source] io::Error),
     #[error("Failed to read backlight device info {}", .path.display())]
-    ReadingBacklightDeviceFailed {
+    ReadingBacklightDevice {
         device: String,
         path: PathBuf,
         source: io::Error,
     },
     #[error("Failed to parse backlight info in {}: {reason}", .path.display())]
-    ParsingBacklightInfoFailed {
+    ParsingBacklightInfo {
         device: String,
         path: PathBuf,
         reason: String,
     },
     #[error("Failed to write brightness to {}", .path.display())]
-    WritingBrightnessFailed {
+    WritingBrightness {
         device: String,
         path: PathBuf,
         source: io::Error,
@@ -131,15 +130,13 @@ pub(crate) enum SysError {
 impl From<SysError> for Error {
     fn from(e: SysError) -> Self {
         match &e {
-            SysError::ReadingBacklightDirFailed(_) => Error::ListingDevicesFailed(e.into()),
-            SysError::ReadingBacklightDeviceFailed { device, .. }
-            | SysError::ParsingBacklightInfoFailed { device, .. } => {
-                Error::GettingDeviceInfoFailed {
-                    device: device.clone(),
-                    source: e.into(),
-                }
-            }
-            SysError::WritingBrightnessFailed { device, .. } => Error::SettingBrightnessFailed {
+            SysError::ReadingBacklightDir(_) => Error::ListingDevices(e.into()),
+            SysError::ReadingBacklightDevice { device, .. }
+            | SysError::ParsingBacklightInfo { device, .. } => Error::GettingDeviceInfo {
+                device: device.clone(),
+                source: e.into(),
+            },
+            SysError::WritingBrightness { device, .. } => Error::SettingBrightness {
                 device: device.clone(),
                 source: e.into(),
             },
@@ -156,14 +153,14 @@ pub(crate) fn read_value(device: &str, name: Value) -> Result<u32, SysError> {
         .iter()
         .collect::<PathBuf>();
     fs::read_to_string(&path)
-        .map_err(|source| SysError::ReadingBacklightDeviceFailed {
+        .map_err(|source| SysError::ReadingBacklightDevice {
             device: device.into(),
             path: path.clone(),
             source,
         })?
         .trim()
         .parse::<u32>()
-        .map_err(|e| SysError::ParsingBacklightInfoFailed {
+        .map_err(|e| SysError::ParsingBacklightInfo {
             device: device.into(),
             path,
             reason: e.to_string(),
@@ -177,7 +174,7 @@ pub(crate) fn set_value(device: &str, value: u32) -> Result<(), SysError> {
     let path = [BACKLIGHT_DIR, device, "brightness"]
         .iter()
         .collect::<PathBuf>();
-    fs::write(&path, value.to_string()).map_err(|source| SysError::WritingBrightnessFailed {
+    fs::write(&path, value.to_string()).map_err(|source| SysError::WritingBrightness {
         device: device.into(),
         path: path.clone(),
         source,
