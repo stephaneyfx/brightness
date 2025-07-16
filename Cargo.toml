@@ -2,7 +2,7 @@
 name = "brightness"
 version = "0.7.0"
 authors = ["Stephane Raux <stephaneyfx@gmail.com>", "Contributors"]
-edition = "2018"
+edition = "2024"
 description = "Get and set display brightness"
 license = "0BSD"
 homepage = "https://github.com/stephaneyfx/brightness"
