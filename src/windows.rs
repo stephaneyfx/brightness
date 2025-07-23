@@ -41,7 +41,7 @@ pub(crate) fn brightness_devices() -> impl Stream<Item = Result<AsyncDeviceImpl,
         .into_stream()
         .map(stream::iter)
         .flatten()
-        .map(|d| d.map(|d| AsyncDeviceImpl(Arc::new(d))).map_err(Into::into))
+        .map(|d| d.map(|d| AsyncDeviceImpl(Arc::new(d))))
 }
 
 impl BrightnessExt for BrightnessDevice {
