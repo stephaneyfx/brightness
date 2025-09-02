@@ -1,6 +1,6 @@
 [package]
 name = "brightness"
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Stephane Raux <stephaneyfx@gmail.com>", "Contributors"]
 edition = "2024"
 description = "Get and set display brightness"
